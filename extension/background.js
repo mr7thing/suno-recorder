@@ -1,27 +1,30 @@
 // ===================================================================
 // Suno Recorder — Service worker
 // -------------------------------------------------------------------
-// 点扩展图标 → 注入 content_iso.js 到当前 tab
-// 接收 content_iso.js 的下载请求 → chrome.downloads
+// 双保险：content_scripts 自动注入 + action.onClicked 兜底注入
 // ===================================================================
 
-// ---------- 点扩展图标：注入录制脚本 ----------
+console.log('[Suno Recorder] background service worker started');
+
+// ---------- 点扩展图标：兜底注入 ----------
 chrome.action.onClicked.addListener(async (tab) => {
+  console.log('[Suno Recorder] action.onClicked, tab:', tab.url);
   if (!tab.id) return;
   try {
-    await chrome.scripting.executeScript({
+    const results = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       files: ['content_iso.js'],
-      world: 'ISOLATED',
     });
+    console.log('[Suno Recorder] inject ok, results:', results.length);
   } catch (e) {
-    console.error('[Suno Recorder] inject failed:', e);
+    console.error('[Suno Recorder] inject failed:', e.message);
   }
 });
 
 // ---------- 接收下载请求 ----------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg?.type !== 'SUNO_REC_DOWNLOAD') return false;
+  console.log('[Suno Recorder] download request, size:', msg.dataUrl?.length);
   void download(msg.dataUrl, msg.mimeType);
   return false;
 });
