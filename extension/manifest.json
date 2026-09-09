@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Suno Recorder",
+  "version": "0.1.0",
+  "description": "Capture Suno playback to local audio file (Phase 1: webm).",
+  "permissions": ["downloads", "activeTab", "scripting", "storage"],
+  "host_permissions": ["https://*.suno.com/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html" },
+  "content_scripts": [
+    {
+      "matches": ["https://*.suno.com/*"],
+      "js": ["content_main.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": ["https://*.suno.com/*"],
+      "js": ["content_iso.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED",
+      "all_frames": false
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+# ===== 系统与编辑器 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.code-workspace
+
+# ===== 构建产物 =====
+extension/*.zip
+extension/*.crx
+extension/*.pem
+native-host/bin/
+native-host/dist/
+native-host/*.exe
+native-host/*.exe.manifest
+
+# ===== 日志与临时 =====
+*.log
+logs/
+.cache/
+tmp/
+
+# ===== 下载的音频文件（本地不入库） =====
+downloads/
+*.webm
+*.mp3
+*.ogg
+*.m4a
+*.wav
+*.flac
+
+# ===== FFmpeg 二进制（体积过大，单独分发） =====
+bin/ffmpeg*
+bin/ffprobe*
+
+# ===== Node / 构建工具 =====
+node_modules/
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log
+
+# ===== Rust / Go 构建产物 =====
+target/
+*.pdb
+*.obj
+*.dll
+*.lib

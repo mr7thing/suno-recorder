@@ -1,0 +1,15 @@
+# 统一仓库行尾为 LF，避免跨平台 CRLF 污染 diff
+* text=auto eol=lf
+
+# 二进制文件不做行尾转换
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
+*.webm binary
+*.mp3 binary
+*.ogg binary
+*.m4a binary
+*.exe binary
+*.dll binary
+*.pdb binary
