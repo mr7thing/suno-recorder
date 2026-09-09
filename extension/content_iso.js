@@ -1,9 +1,9 @@
 // ===================================================================
-// Suno Recorder — Page UI + Recorder
+// Suno Recorder — 方案 B: 注入到 Play 旁，点击 = Play + 录制
 // -------------------------------------------------------------------
-// 自动注入（content_scripts document_idle）
-// + 兜底注入（action.onClicked → scripting.executeScript）
-// 按钮挂到 documentElement，不被 React 重渲染冲掉
+// 点击录制按钮 → click Suno Play → MutationObserver 监听 audio.src
+// → src 变 blob 的瞬间 captureStream + MediaRecorder.start()
+// 从真实音频第一帧开始，零遗漏
 // ===================================================================
 
 (() => {
@@ -16,13 +16,23 @@
 
   // ---------- 状态 ----------
   const state = {
-    phase: 'idle',
+    phase: 'idle',      // idle | waiting | recording | processing
     recorder: null,
     chunks: [],
     audio: null,
+    srcObserver: null,
   };
 
-  // ---------- 找主 audio ----------
+  // ---------- 找 Suno 的 Play 按钮 ----------
+  function findSunoPlayBtn() {
+    const btns = Array.from(document.querySelectorAll('button'));
+    // 优先 aria-label="Play"，兜底 textContent="Play"
+    return btns.find(b => b.getAttribute('aria-label') === 'Play')
+        || btns.find(b => b.textContent.trim() === 'Play')
+        || null;
+  }
+
+  // ---------- 找主 audio（blob URL + 长时长） ----------
   function findMainAudio() {
     const audios = Array.from(document.querySelectorAll('audio'));
     return audios.find(a => a.src && a.src.startsWith('blob:') && a.duration > 10)
@@ -46,11 +56,87 @@
     });
   }
 
-  // ---------- 开始 ----------
+  // ==================================================================
+  // 开始：点击 Suno Play + 监听 src 变化 + 精确录制
+  // ==================================================================
   async function start() {
-    const audio = findMainAudio();
-    if (!audio) { setPhase('idle', '未找到音频元素，请先点 Suno 的 Play 按钮'); return; }
+    // 如果已有 blob audio（用户已点过 Play），直接录
+    const existing = findMainAudio();
+    if (existing) {
+      console.log('[Suno Recorder] audio 已存在，直接录制');
+      return beginRecording(existing);
+    }
 
+    // 找 Suno Play 按钮
+    const playBtn = findSunoPlayBtn();
+    if (!playBtn) {
+      setPhase('idle', '未找到 Suno Play 按钮，请确保在歌曲页面');
+      return;
+    }
+
+    setPhase('waiting', '点击 Play 并等待音频加载…');
+    console.log('[Suno Recorder] clicking Suno Play, waiting for blob src…');
+
+    // 设置 src 监听器——等 audio.src 变 blob
+    setupSrcWatcher((audio) => {
+      console.log('[Suno Recorder] blob src detected, starting recorder');
+      beginRecording(audio);
+    });
+
+    // 点击 Suno Play
+    playBtn.click();
+  }
+
+  // ---------- 监听 audio.src 变 blob ----------
+  function setupSrcWatcher(onBlobReady) {
+    if (state.srcObserver) state.srcObserver.disconnect();
+
+    // 用 MutationObserver 监听 audio 元素的 src 属性变化
+    state.srcObserver = new MutationObserver((muts) => {
+      for (const mut of muts) {
+        if (mut.type === 'attributes' && mut.attributeName === 'src') {
+          const audio = mut.target;
+          if (audio.src && audio.src.startsWith('blob:') && audio.duration > 10) {
+            state.srcObserver.disconnect();
+            state.srcObserver = null;
+            onBlobReady(audio);
+            return;
+          }
+        }
+      }
+    });
+
+    // 监听现有 audio + 新增 audio
+    const observeAll = () => {
+      document.querySelectorAll('audio').forEach(a => {
+        state.srcObserver.observe(a, { attributes: true, attributeFilter: ['src'] });
+      });
+    };
+    observeAll();
+
+    // 也要监听新 audio 元素的出现
+    const bodyObserver = new MutationObserver(() => {
+      document.querySelectorAll('audio').forEach(a => {
+        if (a.src && a.src.startsWith('blob:') && a.duration > 10) {
+          bodyObserver.disconnect();
+          if (state.srcObserver) { state.srcObserver.disconnect(); state.srcObserver = null; }
+          onBlobReady(a);
+        }
+      });
+    });
+    bodyObserver.observe(document.body, { childList: true, subtree: true });
+    // 10 秒超时
+    setTimeout(() => {
+      if (state.phase === 'waiting') {
+        bodyObserver.disconnect();
+        if (state.srcObserver) { state.srcObserver.disconnect(); state.srcObserver = null; }
+        setPhase('idle', '10秒内未检测到音频，请手动点 Play');
+      }
+    }, 10000);
+  }
+
+  // ---------- 真正开始录制 ----------
+  function beginRecording(audio) {
     let stream;
     try {
       stream = audio.mozCaptureStream ? audio.mozCaptureStream() : audio.captureStream();
@@ -59,7 +145,7 @@
       return;
     }
     if (stream.getAudioTracks().length === 0) {
-      setPhase('idle', '无音频轨道，请先播放');
+      setPhase('idle', '无音频轨道');
       return;
     }
 
@@ -71,6 +157,7 @@
       if (e.data && e.data.size > 0) state.chunks.push(e.data);
     };
     state.recorder.start(1000);
+    // 确保 audio 在播放
     if (audio.paused) audio.play().catch(() => {});
     setPhase('recording');
     console.log('[Suno Recorder] recording started, mime:', mime);
@@ -118,6 +205,7 @@
       background: #4f46e5;
     }
     #__suno_rec_btn:hover { transform: scale(1.05); }
+    #__suno_rec_btn.wait { background: #f59e0b; }
     #__suno_rec_btn.rec { background: #dc2626; animation: sr-pulse 1.5s infinite; }
     #__suno_rec_btn.proc { background: #6b7280; cursor: wait; }
     #__suno_rec_btn .sr-icon {
@@ -125,10 +213,12 @@
       background: #fff;
     }
     #__suno_rec_btn.rec .sr-icon { background: #fee2e2; }
+    #__suno_rec_btn.wait .sr-icon { background: #fef3c7; animation: sr-spin 1s linear infinite; }
     @keyframes sr-pulse {
       0%, 100% { box-shadow: 0 0 0 0 rgba(220,38,38,.5); }
       50% { box-shadow: 0 0 0 12px rgba(220,38,38,0); }
     }
+    @keyframes sr-spin { to { transform: rotate(360deg); } }
     #__suno_rec_tip {
       position: fixed; bottom: 76px; right: 24px; z-index: 2147483647;
       padding: 6px 12px; border-radius: 6px;
@@ -138,7 +228,6 @@
     }
     #__suno_rec_tip.show { opacity: 1; }
   `;
-  // style 加到 head，不存在则加到 documentElement
   (document.head || document.documentElement).appendChild(style);
 
   const btn = document.createElement('div');
@@ -148,7 +237,7 @@
     e.stopPropagation();
     e.preventDefault();
     if (state.phase === 'idle') start();
-    else if (state.phase === 'recording') stop();
+    else if (state.phase === 'waiting' || state.phase === 'recording') stop();
   });
 
   const tip = document.createElement('div');
@@ -156,11 +245,13 @@
 
   function setPhase(phase, msg) {
     state.phase = phase;
-    btn.className = phase === 'recording' ? 'rec'
+    btn.className = phase === 'waiting' ? 'wait'
+                   : phase === 'recording' ? 'rec'
                    : phase === 'processing' ? 'proc' : '';
     const label = btn.querySelector('.sr-label');
     if (!label) return;
     if (phase === 'idle') label.textContent = '播放+录制';
+    if (phase === 'waiting') label.textContent = '取消';
     if (phase === 'recording') label.textContent = '停止录制';
     if (phase === 'processing') label.textContent = '处理中…';
     if (msg) {
@@ -170,11 +261,10 @@
     }
   }
 
-  // 按钮加到 documentElement（html 元素），不被 React body 重渲染冲掉
   document.documentElement.appendChild(tip);
   document.documentElement.appendChild(btn);
 
-  // MutationObserver 兜底：如果按钮被冲掉，重新加回
+  // MutationObserver 兜底：按钮被冲掉则重新加回
   const observer = new MutationObserver(() => {
     if (!document.getElementById('__suno_rec_btn')) {
       document.documentElement.appendChild(btn);
@@ -183,6 +273,6 @@
   });
   observer.observe(document.documentElement, { childList: true });
 
-  console.log('[Suno Recorder] 浮动按钮已注入, audio count:',
+  console.log('[Suno Recorder] 方案 B 按钮已注入, audio count:',
     document.querySelectorAll('audio').length);
 })();
