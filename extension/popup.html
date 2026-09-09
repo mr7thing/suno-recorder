@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <style>
-  body { width: 220px; margin: 0; padding: 14px; font: 13px/1.4 system-ui, sans-serif; }
+  body { width: 240px; margin: 0; padding: 14px; font: 13px/1.4 system-ui, sans-serif; }
   .row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
   button {
     width: 100%; padding: 9px 12px; border: 0; border-radius: 6px;
@@ -24,10 +24,10 @@
 <body>
   <div class="row">
     <span id="dot" class="dot"></span>
-    <span id="status" class="status">未在 Suno 页面</span>
+    <span id="status" class="status">点击开始自动注入</span>
   </div>
-  <button id="toggle" class="primary" disabled>开始录制</button>
-  <div class="hint" id="hint">打开 Suno 歌曲页面并播放，扩展自动捕获音频流。</div>
+  <button id="toggle" class="primary">开始录制</button>
+  <div class="hint" id="hint">首次点击会注入录制脚本到页面。请确保在 suno.com 歌曲页面。</div>
   <script src="popup.js"></script>
 </body>
 </html>

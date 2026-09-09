@@ -1,13 +1,11 @@
 // ===================================================================
 // Suno Recorder — Service worker
 // -------------------------------------------------------------------
-// 状态协调 + 下载执行。不接触音频数据本身。
+// 状态协调 + 按需注入 + 下载执行
 // ===================================================================
 
-// ---------- 单一真相源 ----------
-const state = { recording: false, streams: 0, ready: false };
+const state = { recording: false, ready: false, hasAudio: false };
 
-// ---------- 消息总线 ----------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg?.type) return false;
 
@@ -17,13 +15,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       broadcast();
       return false;
 
-    case 'SUNO_REC_STREAM':
-      state.streams++;
-      broadcast();
-      return false;
-
     case 'SUNO_REC_RESULT':
-      if (msg.cmd === 'start' && msg.result?.ok) state.recording = true;
+      if (msg.cmd === 'start') {
+        state.recording = !!msg.result?.ok;
+        if (msg.result?.error) state.lastError = msg.result.error;
+      }
       if (msg.cmd === 'stop') state.recording = false;
       broadcast();
       return false;
@@ -37,7 +33,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
 
     case 'SUNO_REC_CMD':
-      forwardToTab(msg);
+      void handleCommand(msg);
       return false;
 
     default:
@@ -45,12 +41,40 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-// ---------- 转发命令到当前 tab ----------
-function forwardToTab(msg) {
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    const tab = tabs[0];
-    if (!tab?.id) return;
-    chrome.tabs.sendMessage(tab.id, msg).catch(() => {});
+// ---------- 处理命令：先注入再转发 ----------
+async function handleCommand(msg) {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  const tab = tabs[0];
+  if (!tab?.id) return;
+
+  await ensureInjected(tab.id);
+  // 50ms 等 listener 就位
+  await sleep(50);
+  await chrome.tabs.sendMessage(tab.id, msg).catch(() => {});
+}
+
+// ---------- 按需注入：确保 content scripts 在运行 ----------
+async function ensureInjected(tabId) {
+  // 先 ping content_iso.js——通了说明已注入
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'SUNO_REC_PING' });
+    return; // 已注入
+  } catch {
+    // 未注入，继续
+  }
+
+  // 注入 ISOLATED world 桥接
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ['content_iso.js'],
+    world: 'ISOLATED',
+  });
+
+  // 注入 MAIN world 核心
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ['content_main.js'],
+    world: 'MAIN',
   });
 }
 
@@ -60,18 +84,12 @@ function broadcast() {
     .catch(() => {});
 }
 
-// ---------- 执行下载 ----------
+// ---------- 下载 ----------
 async function download(dataUrl, mimeType) {
-  const ts = new Date().toISOString()
-    .replace(/[:.]/g, '-')
-    .slice(0, 19);
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const ext = pickExt(mimeType);
   const filename = `suno-recorder/suno-${ts}.${ext}`;
-  await chrome.downloads.download({
-    url: dataUrl,
-    filename,
-    saveAs: true,
-  });
+  await chrome.downloads.download({ url: dataUrl, filename, saveAs: true });
 }
 
 function pickExt(mime = '') {
@@ -79,4 +97,8 @@ function pickExt(mime = '') {
   if (mime.includes('ogg')) return 'ogg';
   if (mime.includes('mp4')) return 'm4a';
   return 'bin';
+}
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
 }

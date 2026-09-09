@@ -1,7 +1,5 @@
 // ===================================================================
 // Suno Recorder — Popup UI
-// -------------------------------------------------------------------
-// 命令发送 + 状态接收，不直接做录制
 // ===================================================================
 
 const $ = (sel) => document.querySelector(sel);
@@ -17,10 +15,15 @@ chrome.runtime.onMessage.addListener((msg) => {
     updateUI();
   } else if (msg.type === 'SUNO_REC_STATE') {
     recording = !!msg.recording;
-    ready = true;
+    ready = !!msg.ready;
     updateUI();
   } else if (msg.type === 'SUNO_REC_RESULT') {
-    if (msg.cmd === 'start') recording = !!msg.result?.ok;
+    if (msg.cmd === 'start') {
+      recording = !!msg.result?.ok;
+      if (!recording && msg.result?.error) {
+        $('#hint').textContent = '错误: ' + msg.result.error;
+      }
+    }
     if (msg.cmd === 'stop') recording = false;
     updateUI();
   }
@@ -29,10 +32,14 @@ chrome.runtime.onMessage.addListener((msg) => {
 // ---------- 发送命令 ----------
 $('#toggle').addEventListener('click', () => {
   const cmd = recording ? 'stop' : 'start';
+  $('#toggle').disabled = true;
+  $('#toggle').textContent = '注入中…';
   chrome.runtime.sendMessage({ type: 'SUNO_REC_CMD', cmd });
+  // 1 秒后自动恢复按钮（防卡死）
+  setTimeout(() => { $('#toggle').disabled = false; updateUI(); }, 1500);
 });
 
-// ---------- UI 渲染 ----------
+// ---------- UI ----------
 function updateUI() {
   const btn = $('#toggle');
   const dot = $('#dot');
@@ -40,12 +47,12 @@ function updateUI() {
   const hint = $('#hint');
 
   if (!ready) {
-    btn.disabled = true;
+    btn.disabled = false;
     btn.textContent = '开始录制';
     btn.className = 'primary';
     dot.className = 'dot';
-    status.textContent = '未在 Suno 页面';
-    hint.textContent = '请在 suno.com 歌曲页面打开本扩展。';
+    status.textContent = '点击开始自动注入';
+    hint.textContent = '首次点击会注入录制脚本到页面。请确保在 suno.com 歌曲页面。';
     return;
   }
 
@@ -55,7 +62,7 @@ function updateUI() {
     btn.className = 'danger';
     dot.className = 'dot rec';
     status.textContent = '录制中…';
-    hint.textContent = '点击停止后会自动下载 webm 文件。';
+    hint.textContent = '点击停止后自动下载 webm 文件。';
   } else {
     btn.textContent = '开始录制';
     btn.className = 'primary';
