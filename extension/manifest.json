@@ -1,10 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Suno Recorder",
-  "version": "0.2.0",
-  "description": "Capture Suno playback to local audio file (webm).",
-  "permissions": ["downloads", "activeTab", "scripting", "storage"],
+  "version": "0.3.0",
+  "description": "在 Suno 歌曲页面注入播放+录制按钮，一键录制为 webm。",
+  "permissions": ["downloads", "activeTab", "scripting"],
   "host_permissions": ["https://*.suno.com/*", "https://suno.com/*"],
   "background": { "service_worker": "background.js" },
-  "action": { "default_popup": "popup.html" }
+  "action": {
+    "default_title": "在当前页面注入录制按钮"
+  }
 }
