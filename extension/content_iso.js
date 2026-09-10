@@ -40,6 +40,14 @@
         || null;
   }
 
+  // ---------- 提取歌名 ----------
+  function songTitle() {
+    const h1 = document.querySelector('h1');
+    if (h1?.textContent?.trim()) return h1.textContent.trim();
+    // 兜底: 页面标题去掉 "| Suno" 后缀
+    return document.title.replace(/\s*\|\s*Suno.*$/i, '').trim();
+  }
+
   function pickMime() {
     const c = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'];
     return c.find(m => {
@@ -97,8 +105,7 @@
         if (mut.type === 'attributes' && mut.attributeName === 'src') {
           const audio = mut.target;
           if (audio.src && audio.src.startsWith('blob:') && audio.duration > 10) {
-            state.srcObserver.disconnect();
-            state.srcObserver = null;
+            cleanup();
             onBlobReady(audio);
             return;
           }
@@ -106,30 +113,28 @@
       }
     });
 
-    // 监听现有 audio + 新增 audio
-    const observeAll = () => {
-      document.querySelectorAll('audio').forEach(a => {
-        state.srcObserver.observe(a, { attributes: true, attributeFilter: ['src'] });
-      });
+    const cleanup = () => {
+      state.srcObserver?.disconnect();
+      state.srcObserver = null;
+      bodyObserver.disconnect();
     };
-    observeAll();
 
-    // 也要监听新 audio 元素的出现
+    // 监听现有 audio 的 src 属性
+    document.querySelectorAll('audio').forEach(a => {
+      state.srcObserver.observe(a, { attributes: true, attributeFilter: ['src'] });
+    });
+
+    // 兜底: 监听新出现的 audio 元素（可能整个元素被替换）
     const bodyObserver = new MutationObserver(() => {
-      document.querySelectorAll('audio').forEach(a => {
-        if (a.src && a.src.startsWith('blob:') && a.duration > 10) {
-          bodyObserver.disconnect();
-          if (state.srcObserver) { state.srcObserver.disconnect(); state.srcObserver = null; }
-          onBlobReady(a);
-        }
-      });
+      const audio = findMainAudio();
+      if (audio) { cleanup(); onBlobReady(audio); }
     });
     bodyObserver.observe(document.body, { childList: true, subtree: true });
+
     // 10 秒超时
     setTimeout(() => {
       if (state.phase === 'waiting') {
-        bodyObserver.disconnect();
-        if (state.srcObserver) { state.srcObserver.disconnect(); state.srcObserver = null; }
+        cleanup();
         setPhase('idle', '10秒内未检测到音频，请手动点 Play');
       }
     }, 10000);
@@ -165,6 +170,12 @@
 
   // ---------- 停止 ----------
   function stop() {
+    if (state.phase === 'waiting') {
+      state.srcObserver?.disconnect();
+      state.srcObserver = null;
+      setPhase('idle', '已取消');
+      return;
+    }
     if (!state.recorder) return;
     setPhase('processing');
 
@@ -181,8 +192,9 @@
         type: 'SUNO_REC_DOWNLOAD',
         dataUrl,
         mimeType: state.recorder.mimeType,
+        title: songTitle(),
       });
-      setPhase('idle', '已下载 ' + (blob.size / 1024).toFixed(0) + ' KB');
+      setPhase('idle', '转码中…');
       state.recorder = null;
     };
     state.recorder.stop();
@@ -237,7 +249,7 @@
     e.stopPropagation();
     e.preventDefault();
     if (state.phase === 'idle') start();
-    else if (state.phase === 'waiting' || state.phase === 'recording') stop();
+    else stop();
   });
 
   const tip = document.createElement('div');
@@ -253,7 +265,7 @@
     if (phase === 'idle') label.textContent = '播放+录制';
     if (phase === 'waiting') label.textContent = '取消';
     if (phase === 'recording') label.textContent = '停止录制';
-    if (phase === 'processing') label.textContent = '处理中…';
+    if (phase === 'processing') label.textContent = '转码中…';
     if (msg) {
       tip.textContent = msg;
       tip.classList.add('show');

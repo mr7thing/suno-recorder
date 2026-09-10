@@ -49,3 +49,4 @@ target/
 *.obj
 *.dll
 *.lib
+test.md

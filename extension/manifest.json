@@ -1,14 +1,16 @@
 {
   "manifest_version": 3,
   "name": "Suno Recorder",
-  "version": "0.3.1",
-  "description": "在 Suno 歌曲页面注入播放+录制按钮，一键录制为 webm。",
-  "permissions": ["downloads", "activeTab", "scripting"],
+  "version": "0.4.0",
+  "description": "在 Suno 歌曲页面一键播放+录制，经本地宿主自动转 MP3。",
+  "permissions": ["downloads", "activeTab", "scripting", "nativeMessaging", "notifications"],
   "host_permissions": ["https://*.suno.com/*", "https://suno.com/*"],
   "background": { "service_worker": "background.js" },
   "action": {
-    "default_title": "点此注入/重新注入录制按钮"
+    "default_title": "点此注入/重新注入录制按钮",
+    "default_icon": "icon.png"
   },
+  "icons": { "128": "icon.png" },
   "content_scripts": [
     {
       "matches": ["https://*.suno.com/*", "https://suno.com/*"],
