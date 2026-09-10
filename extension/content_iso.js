@@ -238,12 +238,29 @@
         mimeType: state.recorder.mimeType,
         metadata: extractMetadata(),
       });
-      setPhase('idle', '转码中…');
+      // 保持 processing 状态，等 background 回传转码结果
+      setPhase('processing', '转码中…');
       state.recorder = null;
     };
     state.recorder.stop();
     if (state.audio && !state.audio.paused) state.audio.pause();
   }
+
+  // ---------- 接收 background 转码状态回传 ----------
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (!msg?.type) return;
+    switch (msg.type) {
+      case 'SUNO_REC_PROGRESS':
+        setPhase('processing', msg.message || '转码中…');
+        break;
+      case 'SUNO_REC_DONE':
+        setPhase('idle', '✓ 已保存: ' + (msg.path || ''));
+        break;
+      case 'SUNO_REC_ERROR':
+        setPhase('idle', '✗ ' + (msg.message || '转码失败'));
+        break;
+    }
+  });
 
   // ==================================================================
   // 注入 UI

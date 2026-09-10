@@ -25,27 +25,34 @@ chrome.action.onClicked.addListener(async (tab) => {
 });
 
 // ---------- 接收下载请求 ----------
-chrome.runtime.onMessage.addListener((msg) => {
+chrome.runtime.onMessage.addListener((msg, sender) => {
   if (msg?.type !== 'SUNO_REC_DOWNLOAD') return false;
+  const tabId = sender.tab?.id;
   console.log('[Suno Recorder] download request, dataUrl len:', msg.dataUrl?.length,
-    'title:', msg.metadata?.title);
-  void handleDownload(msg);
+    'title:', msg.metadata?.title, 'tabId:', tabId);
+  void handleDownload(msg, tabId);
   return false;
 });
 
-async function handleDownload(msg) {
+function sendTab(tabId, msg) {
+  if (!tabId) return;
+  chrome.tabs.sendMessage(tabId, msg).catch(() => {});
+}
+
+async function handleDownload(msg, tabId) {
   try {
-    await convertViaHost(msg);
+    await convertViaHost(msg, tabId);
   } catch (e) {
     console.warn('[Suno Recorder] native host 失败，兜底下载 webm:', e.message);
     setBadge('!', '#dc2626');
     setTimeout(() => setBadge(''), 5000);
+    sendTab(tabId, { type: 'SUNO_REC_ERROR', message: e.message });
     await downloadWebm(msg.dataUrl, msg.mimeType);
   }
 }
 
 // ---------- Native Host 转码（分片传输） ----------
-function convertViaHost({ dataUrl, mimeType, metadata }) {
+function convertViaHost({ dataUrl, mimeType, metadata }, tabId) {
   return new Promise((resolve, reject) => {
     const port = chrome.runtime.connectNative(NM_HOST);
     let settled = false;
@@ -94,14 +101,17 @@ function convertViaHost({ dataUrl, mimeType, metadata }) {
           break;
         case 'progress':
           setBadge('…', '#f59e0b');
+          sendTab(tabId, { type: 'SUNO_REC_PROGRESS', message: m.message });
           break;
         case 'done':
           setBadge('✓', '#10b981');
           notify(metadata?.title || 'Suno 录制', 'MP3 已保存: ' + m.path);
+          sendTab(tabId, { type: 'SUNO_REC_DONE', path: m.path });
           setTimeout(() => setBadge(''), 5000);
           finish(null);
           break;
         case 'error':
+          sendTab(tabId, { type: 'SUNO_REC_ERROR', message: m.message });
           finish(new Error(m.message));
           break;
       }
