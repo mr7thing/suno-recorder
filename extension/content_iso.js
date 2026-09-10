@@ -144,11 +144,13 @@
     if (state.srcObserver) state.srcObserver.disconnect();
 
     // 用 MutationObserver 监听 audio 元素的 src 属性变化
+    // 只认 blob:——真实歌曲永远是 blob URL（实测），静音占位是 cdn 直链。
+    // 不能加 duration 判断：src 赋值瞬间 duration=NaN，事件会永久错过。
     state.srcObserver = new MutationObserver((muts) => {
       for (const mut of muts) {
         if (mut.type === 'attributes' && mut.attributeName === 'src') {
           const audio = mut.target;
-          if (audio.src && audio.src.startsWith('blob:') && audio.duration > 10) {
+          if (audio.src && audio.src.startsWith('blob:')) {
             cleanup();
             onBlobReady(audio);
             return;
@@ -169,29 +171,60 @@
     });
 
     // 兜底: 监听新出现的 audio 元素（可能整个元素被替换）
+    // 直接认 blob:，duration=NaN 窗口交给 waitForAudioReady 处理
     const bodyObserver = new MutationObserver(() => {
-      const audio = findMainAudio();
+      const audio = [...document.querySelectorAll('audio')]
+        .find(a => a.src && a.src.startsWith('blob:'));
       if (audio) { cleanup(); onBlobReady(audio); }
     });
     bodyObserver.observe(document.body, { childList: true, subtree: true });
 
-    // 10 秒超时
+    // 30 秒超时：Suno 首次 fetch 音频可能较慢（网络/会员限制）
     setTimeout(() => {
       if (state.phase === 'waiting') {
         cleanup();
-        setPhase('idle', '10秒内未检测到音频，请手动点 Play');
+        setPhase('idle', '30秒内未检测到音频，请手动点 Play 后重试');
       }
-    }, 10000);
+    }, 30000);
+  }
+
+  // ---------- 等待 audio 元数据就绪 ----------
+  // src 赋值瞬间 duration=NaN；loadedmetadata 后 duration 才有效。
+  function waitForAudioReady(audio, timeoutMs) {
+    if (audio.duration > 10 || audio.duration === Infinity) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const finish = (ok) => {
+        audio.removeEventListener('loadedmetadata', onMeta);
+        clearTimeout(timer);
+        resolve(ok);
+      };
+      const onMeta = () => finish(audio.duration > 10 || audio.duration === Infinity || audio.readyState >= 1);
+      const timer = setTimeout(() => finish(audio.readyState >= 1), timeoutMs);
+      audio.addEventListener('loadedmetadata', onMeta, { once: true });
+    });
   }
 
   // ---------- 真正开始录制 ----------
-  function beginRecording(audio) {
-    let stream;
-    try {
-      stream = audio.mozCaptureStream ? audio.mozCaptureStream() : audio.captureStream();
-    } catch (e) {
-      setPhase('idle', 'captureStream 失败: ' + e.message);
+  async function beginRecording(audio) {
+    // 等待 metadata 加载：src 刚变 blob 时 duration=NaN，
+    // 过早 captureStream 会拿到 0 音轨。loadedmetadata 后轨道必然存在。
+    const ready = await waitForAudioReady(audio, 15000);
+    if (!ready) {
+      setPhase('idle', '音频元数据加载超时，请重试');
       return;
+    }
+
+    let stream;
+    // metadata 已就绪但轨道仍可能延迟出现（偶发），重试而非放弃
+    for (let i = 0; i < 10; i++) {
+      try {
+        stream = audio.mozCaptureStream ? audio.mozCaptureStream() : audio.captureStream();
+      } catch (e) {
+        setPhase('idle', 'captureStream 失败: ' + e.message);
+        return;
+      }
+      if (stream.getAudioTracks().length > 0) break;
+      await new Promise(r => setTimeout(r, 200));
     }
     if (stream.getAudioTracks().length === 0) {
       setPhase('idle', '无音频轨道');
