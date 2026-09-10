@@ -57,7 +57,7 @@ async function handleDownload(msg, tabId) {
       setBadge('!', '#dc2626');
       setTimeout(() => setBadge(''), 5000);
       sendTab(tabId, { type: 'SUNO_REC_ERROR', message: e2.message });
-      await downloadWebm(msg.dataUrl, msg.mimeType);
+      await downloadWebm(msg.dataUrl, msg.mimeType, msg.metadata);
     }
   }
 }
@@ -191,10 +191,14 @@ function transcodeViaHost({ dataUrl, mimeType, metadata }, tabId) {
 }
 
 // ---------- 兜底：直接下载 webm ----------
-async function downloadWebm(dataUrl, mimeType) {
+async function downloadWebm(dataUrl, mimeType, metadata) {
+  const title = metadata?.title;
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const filename = `suno-recorder/suno-${ts}.${pickExt(mimeType)}`;
+  const base = title ? sanitize(title) : 'suno-' + ts;
+  const filename = `suno-recorder/${base}.${pickExt(mimeType)}`;
+  console.log('[BG-500] 兜底下载 webm:', filename);
   await chrome.downloads.download({ url: dataUrl, filename, saveAs: true });
+  notify(title || 'Suno 录制', '转码失败，已保存原始 webm');
 }
 
 function pickExt(mime = '') {

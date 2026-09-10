@@ -205,6 +205,36 @@
     state.recorder = rec;
     state.recMime = mime || 'audio/webm;codecs=opus';
 
+    // audio.ended → 自动停止录制（歌曲播完或切下一首）
+    // 不用 removeEventListener，因为 audio 元素可能被 React 替换
+    // 用 once 标记 + phase 守卫防重复
+    const onEnded = () => {
+      console.log('[CS-030] audio.ended 触发，phase:', state.phase);
+      if (state.phase === 'recording' && rec.state === 'recording') {
+        console.log('[CS-031] 自动停止录制');
+        setPhase('finishing');
+        rec.stop();
+      }
+    };
+    audio.addEventListener('ended', onEnded, { once: true });
+    // 兜底：pause 超过 3 秒也停（用户手动暂停）
+    let pauseTimer = null;
+    const onPause = () => {
+      console.log('[CS-032] audio paused');
+      pauseTimer = setTimeout(() => {
+        if (state.phase === 'recording' && rec.state === 'recording') {
+          console.log('[CS-033] pause 超 3s，自动停止');
+          setPhase('finishing');
+          rec.stop();
+        }
+      }, 3000);
+    };
+    const onResume = () => {
+      if (pauseTimer) { clearTimeout(pauseTimer); pauseTimer = null; }
+    };
+    audio.addEventListener('pause', onPause);
+    audio.addEventListener('play', onResume);
+
     // onstop 在 beginRecording 里绑定，不等到 stop()
     // 因为 recorder 可能因 stream 断开而自动 stop（React 重渲染 audio 元素）
     rec.ondataavailable = (e) => {
