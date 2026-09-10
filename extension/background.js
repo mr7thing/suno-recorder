@@ -26,13 +26,15 @@ chrome.action.onClicked.addListener(async (tab) => {
 });
 
 // ---------- 接收下载请求 ----------
-chrome.runtime.onMessage.addListener((msg, sender) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg?.type !== 'SUNO_REC_DOWNLOAD') return false;
   const tabId = sender.tab?.id;
   console.log('[BG-001] 收到 SUNO_REC_DOWNLOAD，dataUrl 长度:', msg.dataUrl?.length,
     'title:', msg.metadata?.title, 'tabId:', tabId);
+  // 立即确认收到，让 content 的 callback 不超时
+  sendResponse({ received: true });
   void handleDownload(msg, tabId);
-  return false;
+  return true; // 异步处理，但已通过 sendResponse 确认
 });
 
 function sendTab(tabId, msg) {

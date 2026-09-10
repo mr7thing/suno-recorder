@@ -234,23 +234,43 @@
       const dataUrl = await blobToDataURL(blob);
       console.log('[CS-001] 录制完成，blob size:', blob.size, 'dataUrl 长度:', dataUrl.length);
       const metadata = extractMetadata();
+      const mime = state.recorder.mimeType || 'audio/webm;codecs=opus';
       console.log('[CS-002] 元数据:', JSON.stringify({
         title: metadata.title, artist: metadata.artist,
         modelVersion: metadata.modelVersion, lyricsLen: metadata.lyrics.length,
       }));
+      setPhase('processing', '转码中…');
+      state.recorder = null;
       chrome.runtime.sendMessage({
         type: 'SUNO_REC_DOWNLOAD',
         dataUrl,
-        mimeType: state.recorder.mimeType,
+        mimeType: mime,
         metadata,
+      }, (resp) => {
+        if (chrome.runtime.lastError) {
+          console.error('[CS-004] sendMessage 失败:', chrome.runtime.lastError.message);
+          console.error('[CS-005] background 未响应，降级直接下载 webm');
+          downloadWebmFallback(dataUrl, mime, metadata.title);
+          return;
+        }
+        console.log('[CS-006] background 确认收到:', JSON.stringify(resp));
       });
-      console.log('[CS-003] 已发送 SUNO_REC_DOWNLOAD，等待转码结果');
-      // 保持 processing 状态，等 background 回传转码结果
-      setPhase('processing', '转码中…');
-      state.recorder = null;
+      console.log('[CS-003] 已发送 SUNO_REC_DOWNLOAD');
     };
     state.recorder.stop();
     if (state.audio && !state.audio.paused) state.audio.pause();
+  }
+
+  // 兜底：background 不可用时直接下载 webm
+  function downloadWebmFallback(dataUrl, mime, title) {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const ext = mime.includes('webm') ? 'webm' : 'bin';
+    const filename = `suno-recorder/${(title || 'suno-' + ts).replace(/[\\/:*?"<>|]/g, '_')}.${ext}`;
+    chrome.downloads.download({ url: dataUrl, filename, saveAs: true }).then(() => {
+      setPhase('idle', '已保存 webm（转码未运行）');
+    }).catch((e) => {
+      setPhase('idle', '下载失败: ' + e.message);
+    });
   }
 
   // ---------- 接收 background 转码状态回传 ----------
@@ -317,7 +337,9 @@
     e.stopPropagation();
     e.preventDefault();
     if (state.phase === 'idle') start();
-    else stop();
+    else if (state.phase === 'recording') stop();
+    else if (state.phase === 'waiting') stop();
+    // processing 状态忽略点击，防止误操作
   });
 
   const tip = document.createElement('div');
