@@ -8,7 +8,7 @@ desktop.ini
 .idea/
 .vscode/
 *.code-workspace
-
+CLAUDE.md
 # ===== 构建产物 =====
 extension/*.zip
 extension/*.crx
