@@ -1,4 +1,4 @@
-// ===================================================================
+﻿// ===================================================================
 // Suno Recorder — Service worker (v0.5.0)
 // -------------------------------------------------------------------
 // 主路径: offscreen document + ffmpeg.wasm 浏览器内转码
@@ -21,7 +21,7 @@ chrome.action.onClicked.addListener(async (tab) => {
       files: ['content_iso.js'],
     });
   } catch (e) {
-    console.error('[Suno Recorder] inject failed:', e.message);
+    console.log('[Suno Recorder] inject failed:', e.message);
   }
 });
 
@@ -37,7 +37,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ received: true });
     // fire-and-forget，但保持 SW 活跃
     void handleDownload(msg, tabId).catch((e) => {
-      console.error('[BG-005] handleDownload 异常:', e.message);
+      console.log('[BG-005] handleDownload 异常:', e.message);
     });
     return false; // 已同步响应，不需要异步
   }
@@ -54,7 +54,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 function sendTab(tabId, msg) {
   if (!tabId) return;
   chrome.tabs.sendMessage(tabId, msg).catch((e) => {
-    console.warn('[BG-002] sendTab 失败:', e.message);
+    console.log('[BG-002] sendTab 失败:', e.message);
   });
 }
 
@@ -64,13 +64,15 @@ async function handleDownload(msg, tabId) {
     await transcodeViaOffscreen(msg, tabId);
     console.log('[BG-011] handleDownload 完成');
   } catch (e) {
-    console.warn('[BG-003] offscreen 失败:', e.message);
-    sendTab(tabId, { type: 'SUNO_REC_PROGRESS', message: 'WASM 失败: ' + e.message });
+    const reason = String(e && e.message) + ' || ' + String(e && e.stack).slice(0, 300);
+    console.log('[BG-003] offscreen 失败:', reason);
+    notify('WASM 转码失败（转兜底）', String(e && e.message).slice(0, 200));
+    sendTab(tabId, { type: 'SUNO_REC_PROGRESS', message: 'WASM 失败: ' + (e && e.message) });
     try {
       console.log('[BG-012] 尝试 native host');
       await transcodeViaHost(msg, tabId);
     } catch (e2) {
-      console.warn('[BG-004] native host 也失败:', e2.message);
+      console.log('[BG-004] native host 也失败:', String(e2 && e2.message));
       setBadge('!', '#dc2626');
       setTimeout(() => setBadge(''), 5000);
       sendTab(tabId, { type: 'SUNO_REC_ERROR', message: e2.message });
@@ -91,7 +93,7 @@ async function transcodeViaOffscreen({ dataUrl, metadata }, tabId) {
 
   return new Promise((resolve, reject) => {
     const timeoutId = setTimeout(() => {
-      console.error('[BG-102] WASM 转码超时（5 分钟）');
+      console.log('[BG-102] WASM 转码超时（5 分钟）');
       reject(new Error('WASM 转码超时（5 分钟）'));
     }, TIMEOUT_MS);
 
@@ -102,7 +104,7 @@ async function transcodeViaOffscreen({ dataUrl, metadata }, tabId) {
     }, (resp) => {
       clearTimeout(timeoutId);
       if (chrome.runtime.lastError) {
-        console.error('[BG-104] sendMessage runtime error:', chrome.runtime.lastError.message);
+        console.log('[BG-104] sendMessage runtime error:', chrome.runtime.lastError.message);
         reject(new Error(chrome.runtime.lastError.message));
         return;
       }
@@ -160,7 +162,7 @@ async function ensureOffscreen() {
       existing = await chrome.runtime.getContexts({
         contextTypes: ['OFFSCREEN_DOCUMENT'],
       }).catch((e) => {
-        console.warn('[BG-205] getContexts 失败:', e.message);
+        console.log('[BG-205] getContexts 失败:', e.message);
         return [];
       });
     } else {
@@ -179,8 +181,24 @@ async function ensureOffscreen() {
         });
         console.log('[BG-202] offscreen document 创建完成');
       } catch (e) {
-        console.error('[BG-203] createDocument 失败:', e.message);
-        throw e;
+        // 经典坑：残留 offscreen（getContexts 未查到但实际存在）
+        // 错误消息 "Only a single offscreen document may be created"
+        const msg = String(e && e.message);
+        console.log('[BG-203] createDocument 失败:', msg);
+        if (msg.includes('single offscreen') || msg.includes('already')) {
+          console.log('[BG-204] 检测到残留 offscreen，关闭后重建');
+          await chrome.offscreen.closeDocument().catch(() => {});
+          await chrome.offscreen.createDocument({
+            url: OFFSCREEN_URL,
+            reasons: [OFFSCREEN_REASON],
+            justification: '使用 ffmpeg.wasm 将 webm 转码为 MP3',
+          });
+          console.log('[BG-202] offscreen document 重建完成');
+        } else {
+          // 其他错误：系统通知弹窗，不依赖 console 级别过滤
+          notify('Offscreen 创建失败', msg.slice(0, 200));
+          throw e;
+        }
       }
     }
   })();

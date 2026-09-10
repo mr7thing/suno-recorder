@@ -1,4 +1,4 @@
-// ===================================================================
+﻿// ===================================================================
 // Suno Recorder — Offscreen 转码器（ffmpeg.wasm）
 // -------------------------------------------------------------------
 // 全链路日志：每个阶段输出 [OS-xxx] 标记，便于定位卡点
@@ -40,7 +40,7 @@ function ensureLoaded() {
       loaded = true;
       console.log('[OS-107] ffmpeg.load 完成，耗时', ((performance.now() - t0) / 1000).toFixed(2) + 's');
     } catch (e) {
-      console.error('[OS-108] ffmpeg.load 失败:', e.message, e.stack);
+      console.log('[OS-108] ffmpeg.load 失败:', e.message, e.stack);
       throw e;
     }
   })();
@@ -156,7 +156,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: true, dataUrl: mp3DataUrl });
     })
     .catch((e) => {
-      console.error('[OS-402] 转码失败:', e.message, e.stack);
+      console.log('[OS-402] 转码失败:', e.message, e.stack);
       sendResponse({ ok: false, error: e.message });
     });
   return true; // 异步响应
