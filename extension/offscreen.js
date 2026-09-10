@@ -34,6 +34,8 @@ function ensureLoaded() {
       await ffmpeg.load({
         coreURL: base + 'ffmpeg-core.js',
         wasmURL: base + 'ffmpeg-core.wasm',
+        // 扩展环境下 webpack 无法从 import.meta.url 推导 worker 路径，必须显式指定
+        classWorkerURL: chrome.runtime.getURL('vendor/814.ffmpeg.js'),
       });
       loaded = true;
       console.log('[OS-107] ffmpeg.load 完成，耗时', ((performance.now() - t0) / 1000).toFixed(2) + 's');
@@ -140,6 +142,13 @@ async function transcode({ dataUrl, metadata }) {
 // ---------- 监听 background 消息 ----------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   console.log('[OS-400] 收到消息，type:', msg?.type);
+
+  // PING：确认 listener 就绪
+  if (msg?.type === 'SUNO_OFFSCREEN_PING') {
+    sendResponse({ pong: true });
+    return false;
+  }
+
   if (msg?.type !== 'SUNO_OFFSCREEN_TRANSCODE') return false;
   transcode(msg)
     .then((mp3DataUrl) => {

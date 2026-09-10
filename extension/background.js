@@ -60,12 +60,8 @@ function sendTab(tabId, msg) {
 
 async function handleDownload(msg, tabId) {
   console.log('[BG-010] handleDownload 开始');
-  // 30 秒超时，防止永远挂起
-  const timeout = new Promise((_, rej) =>
-    setTimeout(() => rej(new Error('handleDownload 超时 30s')), 30000)
-  );
   try {
-    await Promise.race([transcodeViaOffscreen(msg, tabId), timeout]);
+    await transcodeViaOffscreen(msg, tabId);
     console.log('[BG-011] handleDownload 完成');
   } catch (e) {
     console.warn('[BG-003] offscreen 失败:', e.message);
@@ -88,6 +84,9 @@ async function handleDownload(msg, tabId) {
 async function transcodeViaOffscreen({ dataUrl, metadata }, tabId) {
   console.log('[BG-100] transcodeViaOffscreen 开始');
   await ensureOffscreen();
+
+  // PING 等待 offscreen listener 就绪（最多 10 秒）
+  await pingOffscreen();
   console.log('[BG-101] offscreen 就绪，发送转码消息，dataUrl 长度:', dataUrl.length);
 
   return new Promise((resolve, reject) => {
@@ -102,13 +101,13 @@ async function transcodeViaOffscreen({ dataUrl, metadata }, tabId) {
       metadata,
     }, (resp) => {
       clearTimeout(timeoutId);
-      console.log('[BG-103] 收到 offscreen 响应，ok:', resp?.ok,
-        resp?.ok ? ('dataUrl 长度: ' + resp.dataUrl.length) : ('error: ' + resp?.error));
       if (chrome.runtime.lastError) {
         console.error('[BG-104] sendMessage runtime error:', chrome.runtime.lastError.message);
         reject(new Error(chrome.runtime.lastError.message));
         return;
       }
+      console.log('[BG-103] 收到 offscreen 响应，ok:', resp?.ok,
+        resp?.ok ? ('dataUrl 长度: ' + resp.dataUrl.length) : ('error: ' + resp?.error));
       if (!resp?.ok) {
         reject(new Error(resp?.error || 'offscreen 转码失败'));
         return;
@@ -127,23 +126,62 @@ async function transcodeViaOffscreen({ dataUrl, metadata }, tabId) {
   });
 }
 
+// PING offscreen，确认 listener 已注册（createDocument resolve 时机不保证脚本执行完）
+function pingOffscreen(retries = 20) {
+  return new Promise((resolve, reject) => {
+    const attempt = (left) => {
+      chrome.runtime.sendMessage({ type: 'SUNO_OFFSCREEN_PING' }, (resp) => {
+        if (chrome.runtime.lastError || !resp?.pong) {
+          if (left <= 0) {
+            reject(new Error('offscreen 500ms×20 次 PING 无响应，页面加载异常'));
+            return;
+          }
+          setTimeout(() => attempt(left - 1), 500);
+          return;
+        }
+        resolve();
+      });
+    };
+    attempt(retries);
+  });
+}
+
 let offscreenCreating = null;
 
 async function ensureOffscreen() {
+  // 显式检查 API 存在性，给出可定位的错误
+  if (!chrome.offscreen?.createDocument) {
+    throw new Error('chrome.offscreen API 不可用（manifest 缺 offscreen 权限或 Chrome <109）');
+  }
   if (offscreenCreating) return offscreenCreating;
   offscreenCreating = (async () => {
-    const existing = await chrome.runtime.getContexts({
-      contextTypes: ['OFFSCREEN_DOCUMENT'],
-    }).catch(() => []);
+    let existing = [];
+    if (chrome.runtime.getContexts) {
+      existing = await chrome.runtime.getContexts({
+        contextTypes: ['OFFSCREEN_DOCUMENT'],
+      }).catch((e) => {
+        console.warn('[BG-205] getContexts 失败:', e.message);
+        return [];
+      });
+    } else {
+      // Chrome <116 兜底：用 clients.matchAll 探测
+      const cls = await clients.matchAll({ includeUncontrolled: true }).catch(() => []);
+      existing = cls.filter((c) => c.url === chrome.runtime.getURL(OFFSCREEN_URL));
+    }
     console.log('[BG-200] 现有 offscreen 数量:', existing.length);
     if (existing.length === 0) {
       console.log('[BG-201] 创建 offscreen document:', OFFSCREEN_URL);
-      await chrome.offscreen.createDocument({
-        url: OFFSCREEN_URL,
-        reasons: [OFFSCREEN_REASON],
-        justification: '使用 ffmpeg.wasm 将 webm 转码为 MP3',
-      });
-      console.log('[BG-202] offscreen document 创建完成');
+      try {
+        await chrome.offscreen.createDocument({
+          url: OFFSCREEN_URL,
+          reasons: [OFFSCREEN_REASON],
+          justification: '使用 ffmpeg.wasm 将 webm 转码为 MP3',
+        });
+        console.log('[BG-202] offscreen document 创建完成');
+      } catch (e) {
+        console.error('[BG-203] createDocument 失败:', e.message);
+        throw e;
+      }
     }
   })();
   try { await offscreenCreating; } finally { offscreenCreating = null; }
