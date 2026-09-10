@@ -25,16 +25,30 @@ chrome.action.onClicked.addListener(async (tab) => {
   }
 });
 
-// ---------- 接收下载请求 ----------
+// ---------- 统一消息入口 ----------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg?.type !== 'SUNO_REC_DOWNLOAD') return false;
-  const tabId = sender.tab?.id;
-  console.log('[BG-001] 收到 SUNO_REC_DOWNLOAD，dataUrl 长度:', msg.dataUrl?.length,
-    'title:', msg.metadata?.title, 'tabId:', tabId);
-  // 立即确认收到，让 content 的 callback 不超时
-  sendResponse({ received: true });
-  void handleDownload(msg, tabId);
-  return true; // 异步处理，但已通过 sendResponse 确认
+  console.log('[BG-000] 收到消息，type:', msg?.type, 'sender tab:', sender.tab?.id);
+
+  // content → background: 下载请求
+  if (msg?.type === 'SUNO_REC_DOWNLOAD') {
+    const tabId = sender.tab?.id;
+    console.log('[BG-001] SUNO_REC_DOWNLOAD，dataUrl 长度:', msg.dataUrl?.length,
+      'title:', msg.metadata?.title, 'tabId:', tabId);
+    sendResponse({ received: true });
+    // fire-and-forget，但保持 SW 活跃
+    void handleDownload(msg, tabId).catch((e) => {
+      console.error('[BG-005] handleDownload 异常:', e.message);
+    });
+    return false; // 已同步响应，不需要异步
+  }
+
+  // offscreen → background: 转码进度
+  if (msg?.type === 'SUNO_OFFSCREEN_PROGRESS') {
+    setBadge('…', '#f59e0b');
+    return false;
+  }
+
+  return false;
 });
 
 function sendTab(tabId, msg) {
@@ -45,18 +59,26 @@ function sendTab(tabId, msg) {
 }
 
 async function handleDownload(msg, tabId) {
+  console.log('[BG-010] handleDownload 开始');
+  // 30 秒超时，防止永远挂起
+  const timeout = new Promise((_, rej) =>
+    setTimeout(() => rej(new Error('handleDownload 超时 30s')), 30000)
+  );
   try {
-    await transcodeViaOffscreen(msg, tabId);
+    await Promise.race([transcodeViaOffscreen(msg, tabId), timeout]);
+    console.log('[BG-011] handleDownload 完成');
   } catch (e) {
-    console.warn('[BG-003] offscreen 失败，尝试 native host:', e.message);
-    sendTab(tabId, { type: 'SUNO_REC_PROGRESS', message: 'WASM 失败，尝试本地 FFmpeg…' });
+    console.warn('[BG-003] offscreen 失败:', e.message);
+    sendTab(tabId, { type: 'SUNO_REC_PROGRESS', message: 'WASM 失败: ' + e.message });
     try {
+      console.log('[BG-012] 尝试 native host');
       await transcodeViaHost(msg, tabId);
     } catch (e2) {
-      console.warn('[BG-004] native host 也失败，兜底 webm:', e2.message);
+      console.warn('[BG-004] native host 也失败:', e2.message);
       setBadge('!', '#dc2626');
       setTimeout(() => setBadge(''), 5000);
       sendTab(tabId, { type: 'SUNO_REC_ERROR', message: e2.message });
+      console.log('[BG-013] 兜底下载 webm');
       await downloadWebm(msg.dataUrl, msg.mimeType, msg.metadata);
     }
   }
@@ -104,13 +126,6 @@ async function transcodeViaOffscreen({ dataUrl, metadata }, tabId) {
     });
   });
 }
-
-// 接收 offscreen 的进度消息
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg?.type === 'SUNO_OFFSCREEN_PROGRESS') {
-    setBadge('…', '#f59e0b');
-  }
-});
 
 let offscreenCreating = null;
 
