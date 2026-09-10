@@ -98,17 +98,12 @@ function runFfmpeg(input, output, title) {
     ];
     if (title) args.push('-metadata', `title=${title}`, '-metadata', 'artist=Suno');
     args.push(output);
-    console.error('[host-debug] spawning ffmpeg');
 
     const ff = spawn(FFMPEG, args, { windowsHide: true });
     let err = '';
     ff.stderr.on('data', (d) => { err += d; });
-    ff.on('error', (e) => {
-      console.error('[host-debug] spawn error:', e.message);
-      reject(new Error('ffmpeg 启动失败: ' + e.message));
-    });
+    ff.on('error', (e) => reject(new Error('ffmpeg 启动失败: ' + e.message)));
     ff.on('close', (code) => {
-      console.error('[host-debug] ffmpeg close, code:', code);
       if (code === 0) resolve();
       else reject(new Error(`ffmpeg 退出码 ${code}: ${err.slice(-400)}`));
     });
