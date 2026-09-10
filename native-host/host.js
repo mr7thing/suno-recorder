@@ -70,33 +70,47 @@ function readMessages(onMessage) {
 // ==================================================================
 // 转换流程: dataUrl → temp.webm → ffmpeg → OUT_DIR/xxx.mp3
 // ==================================================================
-async function convert({ dataUrl, mimeType, title }) {
+async function convert({ dataUrl, mimeType, metadata = {} }) {
   const b64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
   const webmBuf = Buffer.from(b64, 'base64');
   if (webmBuf.length === 0) throw new Error('empty audio payload');
 
   fs.mkdirSync(OUT_DIR, { recursive: true });
-  const name = sanitize(title) || timestamp();
+  const name = sanitize(metadata.title) || timestamp();
   const outPath = uniquePath(path.join(OUT_DIR, name + '.mp3'));
   const tmpWebm = path.join(os.tmpdir(), 'suno-rec-' + Date.now() + '.webm');
 
   fs.writeFileSync(tmpWebm, webmBuf);
   sendMessage({ type: 'progress', message: `转码中 ${fmtMB(webmBuf.length)}…` });
 
-  await runFfmpeg(tmpWebm, outPath, title);
+  await runFfmpeg(tmpWebm, outPath, metadata);
   fs.unlinkSync(tmpWebm);
 
   sendMessage({ type: 'done', path: outPath, size: fs.statSync(outPath).size });
 }
 
-function runFfmpeg(input, output, title) {
+function runFfmpeg(input, output, meta) {
   return new Promise((resolve, reject) => {
     const args = [
       '-y', '-i', input,
       '-c:a', 'libmp3lame', '-b:a', '320k',
       '-id3v2_version', '3',
     ];
-    if (title) args.push('-metadata', `title=${title}`, '-metadata', 'artist=Suno');
+
+    // 标准 ID3 帧
+    if (meta.title) args.push('-metadata', `title=${meta.title}`);
+    if (meta.artist) args.push('-metadata', `artist=${meta.artist}`);
+    args.push('-metadata', 'album=Suno');
+    const date = parseDate(meta.createdAt);
+    if (date) args.push('-metadata', `date=${date}`);
+    args.push('-metadata', 'genre=AI Generated');
+    if (meta.lyrics) args.push('-metadata', `lyrics=${meta.lyrics}`);
+
+    // 自定义 TXXX 帧：Suno 模型版本
+    if (meta.modelVersion) {
+      args.push('-metadata', `TXXX:Suno-Version=${meta.modelVersion}`);
+    }
+
     args.push(output);
 
     const ff = spawn(FFMPEG, args, { windowsHide: true });
@@ -108,6 +122,15 @@ function runFfmpeg(input, output, title) {
       else reject(new Error(`ffmpeg 退出码 ${code}: ${err.slice(-400)}`));
     });
   });
+}
+
+// "2026年9月9日 22:51" → "2026-09-09"
+function parseDate(s) {
+  if (!s) return '';
+  const m = s.match(/(\d{4})年(\d{1,2})月(\d{1,2})日/);
+  if (!m) return '';
+  const [, y, mo, d] = m;
+  return `${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`;
 }
 
 // ---------- 工具 ----------

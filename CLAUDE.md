@@ -50,9 +50,25 @@ suno-recorder/
 
 | 文件 | 职责 | 不做什么 |
 |------|------|----------|
-| content_iso.js | UI 注入 + 录制 + 歌名提取 | 不直接下载/转码 |
+| content_iso.js | UI 注入 + 录制 + 元数据嗅探 | 不直接下载/转码 |
 | background.js | 注入触发 + 转码编排 + 下载兜底 | 不接触音频字节 |
-| host.js | base64 解码 + FFmpeg 转码 + 文件落盘 | 不关心 DOM |
+| host.js | base64 解码 + FFmpeg 转码 + ID3 写入 | 不关心 DOM |
+
+## 元数据嗅探与 ID3 嵌入
+
+content_iso.js 的 `extractMetadata()` 从页面 DOM 提取：
+
+| 字段 | DOM 来源 | ID3 帧 |
+|------|----------|--------|
+| title | `<h1>` 文本 | TIT2 |
+| artist | h1 附近作者链接 | TPE1 |
+| album | 固定 "Suno" | TALB |
+| date | `span[title]` 匹配 `\d{4}年\d{1,2}月\d{1,2}日` → YYYY-MM-DD | TDRC |
+| genre | 固定 "AI Generated" | TCON |
+| lyrics | `p.whitespace-pre-wrap` 含 [Verse]/[Chorus] 标记 | USLT |
+| modelVersion | `span` 文本匹配 `/^V\d+$/` | TXXX:Suno-Version |
+
+文件名由 title 经 `sanitize()` 清洗后生成。
 
 ## 关键设计决策
 
@@ -89,5 +105,7 @@ suno-recorder/
 ### Phase 2 转码 (smoke-test.js)
 - ffmpeg 生成 2s 正弦 webm → host.js → MP3 82,660 bytes
 - ffprobe 验证 format=mp3, duration=2.04s ✅
-- 文件名 `测试歌曲 <smoke>` → sanitize → `测试歌曲 smoke.mp3` ✅
+- ID3 标签全部嵌入：title/artist/album/date/genre/lyrics ✅
+- 自定义 TXXX:Suno-Version 帧写入 ✅
+- 文件名 `Half Fire, Half Divine.mp3` 来自 title ✅
 - hello/progress/done 三种消息正确回传 ✅

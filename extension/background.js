@@ -27,7 +27,8 @@ chrome.action.onClicked.addListener(async (tab) => {
 // ---------- 接收下载请求 ----------
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type !== 'SUNO_REC_DOWNLOAD') return false;
-  console.log('[Suno Recorder] download request, size:', msg.dataUrl?.length, 'title:', msg.title);
+  console.log('[Suno Recorder] download request, size:', msg.dataUrl?.length,
+    'title:', msg.metadata?.title);
   void handleDownload(msg);
   return false;
 });
@@ -42,7 +43,7 @@ async function handleDownload(msg) {
 }
 
 // ---------- Native Host 转码 ----------
-function convertViaHost({ dataUrl, mimeType, title }) {
+function convertViaHost({ dataUrl, mimeType, metadata }) {
   return new Promise((resolve, reject) => {
     const port = chrome.runtime.connectNative(NM_HOST);
     let settled = false;
@@ -59,7 +60,7 @@ function convertViaHost({ dataUrl, mimeType, title }) {
           settled = true;
           port.disconnect();
           setBadge('✓', '#10b981');
-          notify(title || 'Suno 录制', 'MP3 已保存: ' + m.path);
+          notify(metadata?.title || 'Suno 录制', 'MP3 已保存: ' + m.path);
           setTimeout(() => setBadge(''), 5000);
           resolve();
           break;
@@ -77,7 +78,7 @@ function convertViaHost({ dataUrl, mimeType, title }) {
       if (!settled) reject(new Error(err));
     });
 
-    port.postMessage({ type: 'convert', dataUrl, mimeType, title });
+    port.postMessage({ type: 'convert', dataUrl, mimeType, metadata });
   });
 }
 

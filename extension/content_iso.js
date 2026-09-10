@@ -48,6 +48,50 @@
     return document.title.replace(/\s*\|\s*Suno.*$/i, '').trim();
   }
 
+  // ---------- 提取元数据（歌名/歌词/作者/创作时间/模型版本） ----------
+  function extractMetadata() {
+    const title = songTitle();
+
+    // 歌词：找含 [Verse]/[Chorus] 等标记的 p.whitespace-pre-wrap
+    const lyrics = (() => {
+      const ps = Array.from(document.querySelectorAll('p.whitespace-pre-wrap'));
+      const p = ps.find(p => /\[(Verse|Chorus|Intro|Outro|Bridge|Prechorus|Hook|Interlude)\]/i.test(p.textContent));
+      return p ? p.textContent.trim() : '';
+    })();
+
+    // 作者：h1 附近容器内的链接，排除导航词
+    const artist = (() => {
+      const h1 = document.querySelector('h1');
+      if (!h1) return 'Suno';
+      const container = h1.closest('div, section, article') || h1.parentElement;
+      if (!container) return 'Suno';
+      const navWords = /^(Home|Explore|Create|Studio|Library|Login|Log in|Labs|More|Earn Credits)$/i;
+      const links = Array.from(container.querySelectorAll('a'));
+      const authorLink = links.find(a => {
+        const t = a.textContent.trim();
+        return t && !navWords.test(t)
+          && !a.href.includes('/song/') && !a.href.includes('/home');
+      });
+      return authorLink ? authorLink.textContent.trim() : 'Suno';
+    })();
+
+    // 创作时间：span[title] 匹配日期
+    const createdAt = (() => {
+      const spans = Array.from(document.querySelectorAll('span[title]'));
+      const span = spans.find(s => /\d{4}年\d{1,2}月\d{1,2}日/.test(s.title));
+      return span ? span.title.trim() : '';
+    })();
+
+    // 模型版本：span 文本匹配 V\d+
+    const modelVersion = (() => {
+      const spans = Array.from(document.querySelectorAll('span'));
+      const span = spans.find(s => /^V\d+$/.test(s.textContent.trim()));
+      return span ? span.textContent.trim() : '';
+    })();
+
+    return { title, lyrics, artist, createdAt, modelVersion };
+  }
+
   function pickMime() {
     const c = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'];
     return c.find(m => {
@@ -192,7 +236,7 @@
         type: 'SUNO_REC_DOWNLOAD',
         dataUrl,
         mimeType: state.recorder.mimeType,
-        title: songTitle(),
+        metadata: extractMetadata(),
       });
       setPhase('idle', '转码中…');
       state.recorder = null;
