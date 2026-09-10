@@ -214,13 +214,23 @@
 
   // ---------- 停止 ----------
   function stop() {
+    console.log('[CS-010] stop() 被调用，当前 phase:', state.phase);
     if (state.phase === 'waiting') {
       state.srcObserver?.disconnect();
       state.srcObserver = null;
       setPhase('idle', '已取消');
       return;
     }
-    if (!state.recorder) return;
+    if (!state.recorder) {
+      console.log('[CS-011] state.recorder 为空，无法停止');
+      setPhase('idle', '无录制进行中');
+      return;
+    }
+    if (state.phase !== 'recording') {
+      console.log('[CS-012] phase 不是 recording，跳过 stop');
+      return;
+    }
+    console.log('[CS-013] state.recorder.state:', state.recorder.state);
     setPhase('processing');
 
     state.recorder.onstop = async () => {
@@ -336,6 +346,7 @@
   btn.addEventListener('click', (e) => {
     e.stopPropagation();
     e.preventDefault();
+    console.log('[CS-009] 按钮点击，phase:', state.phase);
     if (state.phase === 'idle') start();
     else if (state.phase === 'recording') stop();
     else if (state.phase === 'waiting') stop();
