@@ -1,4 +1,4 @@
-﻿// ===================================================================
+// ===================================================================
 // Suno Recorder — Service worker (v0.5.0)
 // -------------------------------------------------------------------
 // 主路径: offscreen document + ffmpeg.wasm 浏览器内转码
@@ -9,7 +9,7 @@ console.log('[Suno Recorder] background service worker started');
 
 const NM_HOST = 'com.suno.recorder';
 const OFFSCREEN_URL = 'offscreen.html';
-const OFFSCREEN_REASON = 'AUDIO_PROCESSING';
+const OFFSCREEN_REASON = 'WORKERS'; // ffmpeg.wasm 在 offscreen 内起 Web Worker（AUDIO_PROCESSING 非法，正式 API 已移除该枚举）
 const TIMEOUT_MS = 300000; // 转码总超时 5 分钟（wasm 较慢）
 
 // ---------- 点扩展图标：兜底注入 ----------
