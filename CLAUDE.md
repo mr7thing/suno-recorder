@@ -80,10 +80,22 @@ suno-recorder/
 
 ## 实测验证 (2026-09-10)
 
-- native-host smoke-test: webm→MP3 + 全部 ID3 标签 ✓
-- ffmpeg.wasm vendor 文件下载完整（ffmpeg.js 4KB + core.js 114KB + core.wasm 32MB）
-- manifest CSP `wasm-unsafe-eval` 已配置
-- offscreen 权限已添加
+### WASM 主路径端到端 ✓
+录制（自动 audio.ended 停止）→ offscreen ffmpeg.wasm 转码 → MP3 落盘
+（歌曲名.mp3，含 ID3 标签）。三层兜底：WASM → native host → webm。
+
+### native-host smoke-test
+webm→MP3 + 全部 ID3 标签（TIT2/TPE1/TALB/TDRC/TCON/USLT/TXXX:Suno-Version）✓
+
+### WASM 路径关键踩坑（三连）
+1. **offscreen reason 枚举**：`AUDIO_PROCESSING` 在 API 草案期存在，正式发布被移除。
+   必须用 `WORKERS`（ffmpeg.wasm 起的是 Web Worker）。
+2. **classWorkerURL 是毒药**：传了它 ffmpeg.js 用 `{type:"module"}` 创建 worker，
+   而 814.ffmpeg.js 是经典脚本（用 importScripts），module worker 无此 API
+   → ReferenceError → reject 字符串 → e.message undefined。
+   不传时 publicPath 自动从 document.currentScript.src 推导，URL 正确。
+3. **日志被级别过滤**：SW console 默认隐藏 warn/error，失败原因不可见盲调数轮。
+   调试期日志统一 console.log + chrome.notifications 弹窗兜底。
 
 ## 演进路径
 
