@@ -156,8 +156,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: true, dataUrl: mp3DataUrl });
     })
     .catch((e) => {
-      console.log('[OS-402] 转码失败:', e.message, e.stack);
-      sendResponse({ ok: false, error: e.message });
+      // 抛出的可能不是 Error 对象（字符串/普通对象），统一序列化
+      const detail = e instanceof Error ? (e.message + '\n' + e.stack)
+        : (typeof e === 'object' ? JSON.stringify(e) : String(e));
+      console.log('[OS-402] 转码失败:', detail);
+      sendResponse({ ok: false, error: String(detail).slice(0, 500) });
     });
   return true; // 异步响应
 });
