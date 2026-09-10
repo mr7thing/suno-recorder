@@ -117,7 +117,15 @@ function runFfmpeg(input, output, meta) {
     let err = '';
     ff.stderr.on('data', (d) => { err += d; });
     ff.on('error', (e) => reject(new Error('ffmpeg 启动失败: ' + e.message)));
+
+    // FFmpeg 超时保护：120s 未完成则 kill
+    const killer = setTimeout(() => {
+      try { ff.kill('SIGKILL'); } catch {}
+      reject(new Error('ffmpeg 超时（120s）'));
+    }, 120000);
+
     ff.on('close', (code) => {
+      clearTimeout(killer);
       if (code === 0) resolve();
       else reject(new Error(`ffmpeg 退出码 ${code}: ${err.slice(-400)}`));
     });
@@ -163,6 +171,7 @@ function fmtMB(bytes) {
 // 退出三条件：stdin 关闭 + 任务清零 + 写入全部 flush
 let stdinEnded = false;
 let jobs = 0;
+let session = null; // 分片传输会话 { metadata, mimeType, chunks }
 
 function maybeExit() {
   if (stdinEnded && jobs === 0 && pendingWrites === 0) process.exit(0);
@@ -171,11 +180,39 @@ function maybeExit() {
 process.stdin.on('end', () => { stdinEnded = true; maybeExit(); });
 
 readMessages((msg) => {
-  if (msg?.type !== 'convert') return;
-  jobs++;
-  convert(msg)
-    .catch((e) => sendMessage({ type: 'error', message: e.message }))
-    .finally(() => { jobs--; maybeExit(); });
+  switch (msg?.type) {
+    case 'convert_start':
+      session = { metadata: msg.metadata || {}, mimeType: msg.mimeType, chunks: [] };
+      sendMessage({ type: 'chunk_ack' });
+      break;
+
+    case 'chunk':
+      if (session) {
+        session.chunks.push(msg.data);
+        sendMessage({ type: 'chunk_ack', seq: msg.seq });
+      }
+      break;
+
+    case 'convert_end':
+      if (session) {
+        const dataUrl = session.chunks.join('');
+        const metadata = session.metadata;
+        session = null;
+        jobs++;
+        convert({ dataUrl, metadata })
+          .catch((e) => sendMessage({ type: 'error', message: e.message }))
+          .finally(() => { jobs--; maybeExit(); });
+      }
+      break;
+
+    case 'convert':
+      // 兼容旧协议：单条消息直接转码
+      jobs++;
+      convert(msg)
+        .catch((e) => sendMessage({ type: 'error', message: e.message }))
+        .finally(() => { jobs--; maybeExit(); });
+      break;
+  }
 });
 
 sendMessage({ type: 'hello', ffmpeg: FFMPEG, outDir: OUT_DIR });

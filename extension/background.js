@@ -1,24 +1,24 @@
 // ===================================================================
 // Suno Recorder — Service worker
 // -------------------------------------------------------------------
-// 双保险：content_scripts 自动注入 + action.onClicked 兜底注入
-// 下载优先走 Native Host 转 MP3，失败兜底下载 webm
+// 双保险注入 + 分片传输（规避 Native Messaging 1MB 上限）+ 转码编排
+// 失败兜底：直接下载 webm
 // ===================================================================
 
 console.log('[Suno Recorder] background service worker started');
 
 const NM_HOST = 'com.suno.recorder';
+const CHUNK_SIZE = 256 * 1024; // 256KB 一片，远低于 1MB 上限
+const TIMEOUT_MS = 120000;     // 转码总超时 120s
 
 // ---------- 点扩展图标：兜底注入 ----------
 chrome.action.onClicked.addListener(async (tab) => {
-  console.log('[Suno Recorder] action.onClicked, tab:', tab.url);
   if (!tab.id) return;
   try {
-    const results = await chrome.scripting.executeScript({
+    await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       files: ['content_iso.js'],
     });
-    console.log('[Suno Recorder] inject ok, results:', results.length);
   } catch (e) {
     console.error('[Suno Recorder] inject failed:', e.message);
   }
@@ -27,7 +27,7 @@ chrome.action.onClicked.addListener(async (tab) => {
 // ---------- 接收下载请求 ----------
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type !== 'SUNO_REC_DOWNLOAD') return false;
-  console.log('[Suno Recorder] download request, size:', msg.dataUrl?.length,
+  console.log('[Suno Recorder] download request, dataUrl len:', msg.dataUrl?.length,
     'title:', msg.metadata?.title);
   void handleDownload(msg);
   return false;
@@ -37,48 +37,80 @@ async function handleDownload(msg) {
   try {
     await convertViaHost(msg);
   } catch (e) {
-    console.warn('[Suno Recorder] native host 不可用，兜底下载 webm:', e.message);
+    console.warn('[Suno Recorder] native host 失败，兜底下载 webm:', e.message);
+    setBadge('!', '#dc2626');
+    setTimeout(() => setBadge(''), 5000);
     await downloadWebm(msg.dataUrl, msg.mimeType);
   }
 }
 
-// ---------- Native Host 转码 ----------
+// ---------- Native Host 转码（分片传输） ----------
 function convertViaHost({ dataUrl, mimeType, metadata }) {
   return new Promise((resolve, reject) => {
     const port = chrome.runtime.connectNative(NM_HOST);
     let settled = false;
+    let offset = 0;
+    let seq = 0;
+    let inflight = 0;
+    const MAX_INFLIGHT = 4; // 流控：最多 4 片在途
+
+    const timeoutId = setTimeout(() => {
+      if (!settled) finish(new Error('转码超时（120s）'));
+    }, TIMEOUT_MS);
+
+    function finish(err) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      try { port.disconnect(); } catch {}
+      if (err) { setBadge('!', '#dc2626'); reject(err); }
+      else resolve();
+    }
+
+    function sendNext() {
+      while (inflight < MAX_INFLIGHT && offset < dataUrl.length) {
+        const chunk = dataUrl.slice(offset, offset + CHUNK_SIZE);
+        port.postMessage({ type: 'chunk', seq, data: chunk });
+        offset += CHUNK_SIZE;
+        seq++;
+        inflight++;
+      }
+      if (offset >= dataUrl.length && inflight === 0) {
+        port.postMessage({ type: 'convert_end' });
+      }
+    }
 
     port.onMessage.addListener((m) => {
       switch (m.type) {
         case 'hello':
           console.log('[Suno Recorder] host hello, ffmpeg:', m.ffmpeg);
+          // 先发元数据，再开始分片
+          port.postMessage({ type: 'convert_start', metadata, mimeType, total: dataUrl.length });
+          sendNext();
+          break;
+        case 'chunk_ack':
+          inflight--;
+          sendNext();
           break;
         case 'progress':
           setBadge('…', '#f59e0b');
           break;
         case 'done':
-          settled = true;
-          port.disconnect();
           setBadge('✓', '#10b981');
           notify(metadata?.title || 'Suno 录制', 'MP3 已保存: ' + m.path);
           setTimeout(() => setBadge(''), 5000);
-          resolve();
+          finish(null);
           break;
         case 'error':
-          settled = true;
-          port.disconnect();
-          setBadge('!', '#dc2626');
-          reject(new Error(m.message));
+          finish(new Error(m.message));
           break;
       }
     });
 
     port.onDisconnect.addListener(() => {
       const err = chrome.runtime.lastError?.message || 'host 进程退出';
-      if (!settled) reject(new Error(err));
+      finish(new Error(err));
     });
-
-    port.postMessage({ type: 'convert', dataUrl, mimeType, metadata });
   });
 }
 
@@ -96,7 +128,7 @@ function pickExt(mime = '') {
   return 'bin';
 }
 
-// ---------- UI 反馈 ----------
+// ---------- UI ----------
 function setBadge(text, color) {
   const opt = { text };
   if (color) opt.backgroundColor = color;
