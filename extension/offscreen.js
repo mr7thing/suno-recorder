@@ -34,14 +34,18 @@ function ensureLoaded() {
       await ffmpeg.load({
         coreURL: base + 'ffmpeg-core.js',
         wasmURL: base + 'ffmpeg-core.wasm',
-        // 扩展环境下 webpack 无法从 import.meta.url 推导 worker 路径，必须显式指定
-        classWorkerURL: chrome.runtime.getURL('vendor/814.ffmpeg.js'),
+        // 注意：不要传 classWorkerURL！传了会把 worker 创建为 module 类型，
+        // 而 vendor/814.ffmpeg.js 是经典脚本（用 importScripts），module worker
+        // 里没有 importScripts → ReferenceError。不传时 publicPath 自动从
+        // document.currentScript.src 推导，经典 worker URL 正确。
       });
       loaded = true;
       console.log('[OS-107] ffmpeg.load 完成，耗时', ((performance.now() - t0) / 1000).toFixed(2) + 's');
     } catch (e) {
-      console.log('[OS-108] ffmpeg.load 失败:', e.message, e.stack);
-      throw e;
+      // worker 回传的错误可能是字符串（e.toString()），不是 Error 对象
+      const detail = e instanceof Error ? (e.message + '\n' + e.stack) : String(e);
+      console.log('[OS-108] ffmpeg.load 失败:', detail);
+      throw new Error('ffmpeg.load 失败: ' + detail);
     }
   })();
   return loading;
