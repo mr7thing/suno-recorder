@@ -1,15 +1,16 @@
 // ===================================================================
-// Suno Recorder — Service worker
+// Suno Recorder — Service worker (v0.5.0)
 // -------------------------------------------------------------------
-// 双保险注入 + 分片传输（规避 Native Messaging 1MB 上限）+ 转码编排
-// 失败兜底：直接下载 webm
+// 主路径: offscreen document + ffmpeg.wasm 浏览器内转码
+// 兜底:   native host (若 offscreen 失败)
 // ===================================================================
 
 console.log('[Suno Recorder] background service worker started');
 
 const NM_HOST = 'com.suno.recorder';
-const CHUNK_SIZE = 256 * 1024; // 256KB 一片，远低于 1MB 上限
-const TIMEOUT_MS = 120000;     // 转码总超时 120s
+const OFFSCREEN_URL = 'offscreen.html';
+const OFFSCREEN_REASON = 'AUDIO_PROCESSING';
+const TIMEOUT_MS = 300000; // 转码总超时 5 分钟（wasm 较慢）
 
 // ---------- 点扩展图标：兜底注入 ----------
 chrome.action.onClicked.addListener(async (tab) => {
@@ -41,86 +42,137 @@ function sendTab(tabId, msg) {
 
 async function handleDownload(msg, tabId) {
   try {
-    await convertViaHost(msg, tabId);
+    await transcodeViaOffscreen(msg, tabId);
   } catch (e) {
-    console.warn('[Suno Recorder] native host 失败，兜底下载 webm:', e.message);
-    setBadge('!', '#dc2626');
-    setTimeout(() => setBadge(''), 5000);
-    sendTab(tabId, { type: 'SUNO_REC_ERROR', message: e.message });
-    await downloadWebm(msg.dataUrl, msg.mimeType);
+    console.warn('[Suno Recorder] offscreen 失败，尝试 native host:', e.message);
+    sendTab(tabId, { type: 'SUNO_REC_PROGRESS', message: 'WASM 失败，尝试本地 FFmpeg…' });
+    try {
+      await transcodeViaHost(msg, tabId);
+    } catch (e2) {
+      console.warn('[Suno Recorder] native host 也失败，兜底 webm:', e2.message);
+      setBadge('!', '#dc2626');
+      setTimeout(() => setBadge(''), 5000);
+      sendTab(tabId, { type: 'SUNO_REC_ERROR', message: e2.message });
+      await downloadWebm(msg.dataUrl, msg.mimeType);
+    }
   }
 }
 
-// ---------- Native Host 转码（分片传输） ----------
-function convertViaHost({ dataUrl, mimeType, metadata }, tabId) {
-  return new Promise((resolve, reject) => {
-    const port = chrome.runtime.connectNative(NM_HOST);
-    let settled = false;
-    let offset = 0;
-    let seq = 0;
-    let inflight = 0;
-    const MAX_INFLIGHT = 4; // 流控：最多 4 片在途
+// ---------- Offscreen + ffmpeg.wasm 转码 ----------
+async function transcodeViaOffscreen({ dataUrl, metadata }, tabId) {
+  await ensureOffscreen();
 
+  return new Promise((resolve, reject) => {
     const timeoutId = setTimeout(() => {
-      if (!settled) finish(new Error('转码超时（120s）'));
+      reject(new Error('WASM 转码超时（5 分钟）'));
     }, TIMEOUT_MS);
 
-    function finish(err) {
-      if (settled) return;
-      settled = true;
+    chrome.runtime.sendMessage({
+      type: 'SUNO_OFFSCREEN_TRANSCODE',
+      dataUrl,
+      metadata,
+    }, (resp) => {
       clearTimeout(timeoutId);
-      try { port.disconnect(); } catch {}
-      if (err) { setBadge('!', '#dc2626'); reject(err); }
-      else resolve();
-    }
-
-    function sendNext() {
-      while (inflight < MAX_INFLIGHT && offset < dataUrl.length) {
-        const chunk = dataUrl.slice(offset, offset + CHUNK_SIZE);
-        port.postMessage({ type: 'chunk', seq, data: chunk });
-        offset += CHUNK_SIZE;
-        seq++;
-        inflight++;
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
       }
-      if (offset >= dataUrl.length && inflight === 0) {
-        port.postMessage({ type: 'convert_end' });
+      if (!resp?.ok) {
+        reject(new Error(resp?.error || 'offscreen 转码失败'));
+        return;
       }
-    }
-
-    port.onMessage.addListener((m) => {
-      switch (m.type) {
-        case 'hello':
-          console.log('[Suno Recorder] host hello, ffmpeg:', m.ffmpeg);
-          // 先发元数据，再开始分片
-          port.postMessage({ type: 'convert_start', metadata, mimeType, total: dataUrl.length });
-          sendNext();
-          break;
-        case 'chunk_ack':
-          inflight--;
-          sendNext();
-          break;
-        case 'progress':
-          setBadge('…', '#f59e0b');
-          sendTab(tabId, { type: 'SUNO_REC_PROGRESS', message: m.message });
-          break;
-        case 'done':
-          setBadge('✓', '#10b981');
-          notify(metadata?.title || 'Suno 录制', 'MP3 已保存: ' + m.path);
-          sendTab(tabId, { type: 'SUNO_REC_DONE', path: m.path });
-          setTimeout(() => setBadge(''), 5000);
-          finish(null);
-          break;
-        case 'error':
-          sendTab(tabId, { type: 'SUNO_REC_ERROR', message: m.message });
-          finish(new Error(m.message));
-          break;
-      }
+      // 下载 MP3
+      const filename = `suno-recorder/${sanitize(metadata?.title) || 'suno-' + Date.now()}.mp3`;
+      chrome.downloads.download({ url: resp.dataUrl, filename }, () => {
+        setBadge('✓', '#10b981');
+        notify(metadata?.title || 'Suno 录制', 'MP3 已保存（WASM 转码）');
+        sendTab(tabId, { type: 'SUNO_REC_DONE', path: filename });
+        setTimeout(() => setBadge(''), 5000);
+        resolve();
+      });
     });
+  });
+}
 
-    port.onDisconnect.addListener(() => {
-      const err = chrome.runtime.lastError?.message || 'host 进程退出';
-      finish(new Error(err));
-    });
+// 接收 offscreen 的进度消息
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.type === 'SUNO_OFFSCREEN_PROGRESS') {
+    setBadge('…', '#f59e0b');
+  }
+});
+
+let offscreenCreating = null;
+
+async function ensureOffscreen() {
+  if (offscreenCreating) return offscreenCreating;
+  offscreenCreating = (async () => {
+    const existing = await chrome.runtime.getContexts({
+      contextTypes: ['OFFSCREEN_DOCUMENT'],
+    }).catch(() => []);
+    if (existing.length === 0) {
+      await chrome.offscreen.createDocument({
+        url: OFFSCREEN_URL,
+        reasons: [OFFSCREEN_REASON],
+        justification: '使用 ffmpeg.wasm 将 webm 转码为 MP3',
+      });
+    }
+  })();
+  try { await offscreenCreating; } finally { offscreenCreating = null; }
+}
+
+// ---------- Native Host 兜底转码 ----------
+function transcodeViaHost({ dataUrl, mimeType, metadata }, tabId) {
+  return new Promise((resolve, reject) => {
+    try {
+      const port = chrome.runtime.connectNative(NM_HOST);
+      let settled = false;
+      let offset = 0, seq = 0, inflight = 0;
+      const CHUNK = 256 * 1024;
+      const MAX_INFLIGHT = 4;
+
+      const timeoutId = setTimeout(() => finish(new Error('转码超时（120s）')), 120000);
+
+      function finish(err) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        try { port.disconnect(); } catch {}
+        if (err) reject(err); else resolve();
+      }
+      function sendNext() {
+        while (inflight < MAX_INFLIGHT && offset < dataUrl.length) {
+          port.postMessage({ type: 'chunk', seq, data: dataUrl.slice(offset, offset + CHUNK) });
+          offset += CHUNK; seq++; inflight++;
+        }
+        if (offset >= dataUrl.length && inflight === 0) port.postMessage({ type: 'convert_end' });
+      }
+
+      port.onMessage.addListener((m) => {
+        switch (m.type) {
+          case 'hello':
+            port.postMessage({ type: 'convert_start', metadata, mimeType, total: dataUrl.length });
+            sendNext(); break;
+          case 'chunk_ack': inflight--; sendNext(); break;
+          case 'progress':
+            setBadge('…', '#f59e0b');
+            sendTab(tabId, { type: 'SUNO_REC_PROGRESS', message: m.message }); break;
+          case 'done':
+            setBadge('✓', '#10b981');
+            notify(metadata?.title || 'Suno 录制', 'MP3 已保存: ' + m.path);
+            sendTab(tabId, { type: 'SUNO_REC_DONE', path: m.path });
+            setTimeout(() => setBadge(''), 5000);
+            finish(null); break;
+          case 'error':
+            sendTab(tabId, { type: 'SUNO_REC_ERROR', message: m.message });
+            finish(new Error(m.message)); break;
+        }
+      });
+      port.onDisconnect.addListener(() => {
+        finish(new Error(chrome.runtime.lastError?.message || 'host 退出'));
+      });
+    } catch (e) {
+      reject(e);
+    }
   });
 }
 
@@ -138,11 +190,13 @@ function pickExt(mime = '') {
   return 'bin';
 }
 
+function sanitize(name) {
+  return (name || '').replace(/[\\/:*?"<>|]/g, '_').trim();
+}
+
 // ---------- UI ----------
 function setBadge(text, color) {
-  const opt = { text };
-  if (color) opt.backgroundColor = color;
-  chrome.action.setBadgeText(opt);
+  chrome.action.setBadgeText({ text });
   if (color) chrome.action.setBadgeBackgroundColor({ color });
 }
 

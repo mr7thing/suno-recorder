@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Suno Recorder",
-  "version": "0.4.0",
-  "description": "在 Suno 歌曲页面一键播放+录制，经本地宿主自动转 MP3。",
-  "permissions": ["downloads", "activeTab", "scripting", "nativeMessaging", "notifications"],
+  "version": "0.5.0",
+  "description": "在 Suno 歌曲页面一键播放+录制，ffmpeg.wasm 浏览器内转 MP3。",
+  "permissions": ["downloads", "activeTab", "scripting", "nativeMessaging", "notifications", "offscreen"],
   "host_permissions": ["https://*.suno.com/*", "https://suno.com/*"],
   "background": { "service_worker": "background.js" },
   "action": {
@@ -18,5 +18,8 @@
       "run_at": "document_idle",
       "all_frames": false
     }
-  ]
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
+  }
 }
