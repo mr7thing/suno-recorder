@@ -232,12 +232,19 @@
         return;
       }
       const dataUrl = await blobToDataURL(blob);
+      console.log('[CS-001] 录制完成，blob size:', blob.size, 'dataUrl 长度:', dataUrl.length);
+      const metadata = extractMetadata();
+      console.log('[CS-002] 元数据:', JSON.stringify({
+        title: metadata.title, artist: metadata.artist,
+        modelVersion: metadata.modelVersion, lyricsLen: metadata.lyrics.length,
+      }));
       chrome.runtime.sendMessage({
         type: 'SUNO_REC_DOWNLOAD',
         dataUrl,
         mimeType: state.recorder.mimeType,
-        metadata: extractMetadata(),
+        metadata,
       });
+      console.log('[CS-003] 已发送 SUNO_REC_DOWNLOAD，等待转码结果');
       // 保持 processing 状态，等 background 回传转码结果
       setPhase('processing', '转码中…');
       state.recorder = null;

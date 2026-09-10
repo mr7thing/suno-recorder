@@ -29,7 +29,7 @@ chrome.action.onClicked.addListener(async (tab) => {
 chrome.runtime.onMessage.addListener((msg, sender) => {
   if (msg?.type !== 'SUNO_REC_DOWNLOAD') return false;
   const tabId = sender.tab?.id;
-  console.log('[Suno Recorder] download request, dataUrl len:', msg.dataUrl?.length,
+  console.log('[BG-001] 收到 SUNO_REC_DOWNLOAD，dataUrl 长度:', msg.dataUrl?.length,
     'title:', msg.metadata?.title, 'tabId:', tabId);
   void handleDownload(msg, tabId);
   return false;
@@ -37,19 +37,21 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
 
 function sendTab(tabId, msg) {
   if (!tabId) return;
-  chrome.tabs.sendMessage(tabId, msg).catch(() => {});
+  chrome.tabs.sendMessage(tabId, msg).catch((e) => {
+    console.warn('[BG-002] sendTab 失败:', e.message);
+  });
 }
 
 async function handleDownload(msg, tabId) {
   try {
     await transcodeViaOffscreen(msg, tabId);
   } catch (e) {
-    console.warn('[Suno Recorder] offscreen 失败，尝试 native host:', e.message);
+    console.warn('[BG-003] offscreen 失败，尝试 native host:', e.message);
     sendTab(tabId, { type: 'SUNO_REC_PROGRESS', message: 'WASM 失败，尝试本地 FFmpeg…' });
     try {
       await transcodeViaHost(msg, tabId);
     } catch (e2) {
-      console.warn('[Suno Recorder] native host 也失败，兜底 webm:', e2.message);
+      console.warn('[BG-004] native host 也失败，兜底 webm:', e2.message);
       setBadge('!', '#dc2626');
       setTimeout(() => setBadge(''), 5000);
       sendTab(tabId, { type: 'SUNO_REC_ERROR', message: e2.message });
@@ -60,10 +62,13 @@ async function handleDownload(msg, tabId) {
 
 // ---------- Offscreen + ffmpeg.wasm 转码 ----------
 async function transcodeViaOffscreen({ dataUrl, metadata }, tabId) {
+  console.log('[BG-100] transcodeViaOffscreen 开始');
   await ensureOffscreen();
+  console.log('[BG-101] offscreen 就绪，发送转码消息，dataUrl 长度:', dataUrl.length);
 
   return new Promise((resolve, reject) => {
     const timeoutId = setTimeout(() => {
+      console.error('[BG-102] WASM 转码超时（5 分钟）');
       reject(new Error('WASM 转码超时（5 分钟）'));
     }, TIMEOUT_MS);
 
@@ -73,7 +78,10 @@ async function transcodeViaOffscreen({ dataUrl, metadata }, tabId) {
       metadata,
     }, (resp) => {
       clearTimeout(timeoutId);
+      console.log('[BG-103] 收到 offscreen 响应，ok:', resp?.ok,
+        resp?.ok ? ('dataUrl 长度: ' + resp.dataUrl.length) : ('error: ' + resp?.error));
       if (chrome.runtime.lastError) {
+        console.error('[BG-104] sendMessage runtime error:', chrome.runtime.lastError.message);
         reject(new Error(chrome.runtime.lastError.message));
         return;
       }
@@ -81,9 +89,10 @@ async function transcodeViaOffscreen({ dataUrl, metadata }, tabId) {
         reject(new Error(resp?.error || 'offscreen 转码失败'));
         return;
       }
-      // 下载 MP3
       const filename = `suno-recorder/${sanitize(metadata?.title) || 'suno-' + Date.now()}.mp3`;
-      chrome.downloads.download({ url: resp.dataUrl, filename }, () => {
+      console.log('[BG-105] 开始下载 MP3:', filename);
+      chrome.downloads.download({ url: resp.dataUrl, filename }, (downloadId) => {
+        console.log('[BG-106] 下载已触发，downloadId:', downloadId);
         setBadge('✓', '#10b981');
         notify(metadata?.title || 'Suno 录制', 'MP3 已保存（WASM 转码）');
         sendTab(tabId, { type: 'SUNO_REC_DONE', path: filename });
@@ -109,12 +118,15 @@ async function ensureOffscreen() {
     const existing = await chrome.runtime.getContexts({
       contextTypes: ['OFFSCREEN_DOCUMENT'],
     }).catch(() => []);
+    console.log('[BG-200] 现有 offscreen 数量:', existing.length);
     if (existing.length === 0) {
+      console.log('[BG-201] 创建 offscreen document:', OFFSCREEN_URL);
       await chrome.offscreen.createDocument({
         url: OFFSCREEN_URL,
         reasons: [OFFSCREEN_REASON],
         justification: '使用 ffmpeg.wasm 将 webm 转码为 MP3',
       });
+      console.log('[BG-202] offscreen document 创建完成');
     }
   })();
   try { await offscreenCreating; } finally { offscreenCreating = null; }
