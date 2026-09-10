@@ -201,12 +201,62 @@
     state.audio = audio;
     state.chunks = [];
     const mime = pickMime();
-    state.recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
-    state.recorder.ondataavailable = (e) => {
+    const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
+    state.recorder = rec;
+    state.recMime = mime || 'audio/webm;codecs=opus';
+
+    // onstop 在 beginRecording 里绑定，不等到 stop()
+    // 因为 recorder 可能因 stream 断开而自动 stop（React 重渲染 audio 元素）
+    rec.ondataavailable = (e) => {
       if (e.data && e.data.size > 0) state.chunks.push(e.data);
     };
-    state.recorder.start(1000);
-    // 确保 audio 在播放
+    rec.onstop = async () => {
+      console.log('[CS-020] onstop 触发，phase:', state.phase, 'chunks:', state.chunks.length);
+      // 防止重复处理
+      if (state.phase === 'idle' || state.phase === 'finishing') {
+        console.log('[CS-021] 已处理过，跳过');
+        return;
+      }
+      setPhase('finishing');
+      const blob = new Blob(state.chunks, { type: state.recMime });
+      console.log('[CS-022] blob size:', blob.size);
+      if (blob.size === 0) {
+        setPhase('idle', '录到 0 字节，可能音频未播放');
+        state.recorder = null;
+        return;
+      }
+      try {
+        const dataUrl = await blobToDataURL(blob);
+        console.log('[CS-001] dataUrl 长度:', dataUrl.length);
+        const metadata = extractMetadata();
+        console.log('[CS-002] 元数据:', JSON.stringify({
+          title: metadata.title, artist: metadata.artist,
+          modelVersion: metadata.modelVersion, lyricsLen: metadata.lyrics.length,
+        }));
+        setPhase('processing', '转码中…');
+        chrome.runtime.sendMessage({
+          type: 'SUNO_REC_DOWNLOAD',
+          dataUrl,
+          mimeType: state.recMime,
+          metadata,
+        }, (resp) => {
+          if (chrome.runtime.lastError) {
+            console.error('[CS-004] sendMessage 失败:', chrome.runtime.lastError.message);
+            downloadWebmFallback(dataUrl, state.recMime, metadata.title);
+            return;
+          }
+          console.log('[CS-006] background 确认收到:', JSON.stringify(resp));
+        });
+        console.log('[CS-003] 已发送 SUNO_REC_DOWNLOAD');
+      } catch (e) {
+        console.error('[CS-023] 处理失败:', e.message);
+        setPhase('idle', '处理失败: ' + e.message);
+      } finally {
+        state.recorder = null;
+      }
+    };
+
+    rec.start(1000);
     if (audio.paused) audio.play().catch(() => {});
     setPhase('recording');
     console.log('[Suno Recorder] recording started, mime:', mime);
@@ -214,7 +264,7 @@
 
   // ---------- 停止 ----------
   function stop() {
-    console.log('[CS-010] stop() 被调用，当前 phase:', state.phase);
+    console.log('[CS-010] stop() 被调用，phase:', state.phase);
     if (state.phase === 'waiting') {
       state.srcObserver?.disconnect();
       state.srcObserver = null;
@@ -222,53 +272,29 @@
       return;
     }
     if (!state.recorder) {
-      console.log('[CS-011] state.recorder 为空，无法停止');
+      console.log('[CS-011] recorder 为空');
       setPhase('idle', '无录制进行中');
       return;
     }
-    if (state.phase !== 'recording') {
-      console.log('[CS-012] phase 不是 recording，跳过 stop');
+    const recState = state.recorder.state;
+    console.log('[CS-013] recorder.state:', recState);
+    if (recState === 'inactive') {
+      // recorder 已自动停止（stream 断开），onstop 已触发或即将触发
+      // 如果 chunks 有数据，onstop 回调会处理；如果没触发，手动触发
+      console.log('[CS-014] recorder 已 inactive，chunks:', state.chunks.length);
+      if (state.chunks.length > 0 && state.phase !== 'finishing') {
+        // onstop 可能已触发但 phase 还是 recording，手动调用
+        state.recorder.onstop?.();
+      }
       return;
     }
-    console.log('[CS-013] state.recorder.state:', state.recorder.state);
-    setPhase('processing');
-
-    state.recorder.onstop = async () => {
-      const blob = new Blob(state.chunks, { type: state.recorder.mimeType });
-      console.log('[Suno Recorder] stopped, chunks:', state.chunks.length, 'size:', blob.size);
-      if (blob.size === 0) {
-        setPhase('idle', '录到 0 字节，可能音频未播放');
-        state.recorder = null;
-        return;
-      }
-      const dataUrl = await blobToDataURL(blob);
-      console.log('[CS-001] 录制完成，blob size:', blob.size, 'dataUrl 长度:', dataUrl.length);
-      const metadata = extractMetadata();
-      const mime = state.recorder.mimeType || 'audio/webm;codecs=opus';
-      console.log('[CS-002] 元数据:', JSON.stringify({
-        title: metadata.title, artist: metadata.artist,
-        modelVersion: metadata.modelVersion, lyricsLen: metadata.lyrics.length,
-      }));
-      setPhase('processing', '转码中…');
-      state.recorder = null;
-      chrome.runtime.sendMessage({
-        type: 'SUNO_REC_DOWNLOAD',
-        dataUrl,
-        mimeType: mime,
-        metadata,
-      }, (resp) => {
-        if (chrome.runtime.lastError) {
-          console.error('[CS-004] sendMessage 失败:', chrome.runtime.lastError.message);
-          console.error('[CS-005] background 未响应，降级直接下载 webm');
-          downloadWebmFallback(dataUrl, mime, metadata.title);
-          return;
-        }
-        console.log('[CS-006] background 确认收到:', JSON.stringify(resp));
-      });
-      console.log('[CS-003] 已发送 SUNO_REC_DOWNLOAD');
-    };
-    state.recorder.stop();
-    if (state.audio && !state.audio.paused) state.audio.pause();
+    if (recState === 'recording') {
+      setPhase('finishing');
+      state.recorder.stop(); // 触发 onstop
+      if (state.audio && !state.audio.paused) state.audio.pause();
+      return;
+    }
+    console.log('[CS-015] 未知 state:', recState);
   }
 
   // 兜底：background 不可用时直接下载 webm
@@ -350,7 +376,7 @@
     if (state.phase === 'idle') start();
     else if (state.phase === 'recording') stop();
     else if (state.phase === 'waiting') stop();
-    // processing 状态忽略点击，防止误操作
+    // processing/finishing 状态忽略点击
   });
 
   const tip = document.createElement('div');
