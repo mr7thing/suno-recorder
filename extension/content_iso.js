@@ -200,6 +200,7 @@
 
     state.audio = audio;
     state.chunks = [];
+    state.processed = false;
     const mime = pickMime();
     const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
     state.recorder = rec;
@@ -210,9 +211,8 @@
     // 用 once 标记 + phase 守卫防重复
     const onEnded = () => {
       console.log('[CS-030] audio.ended 触发，phase:', state.phase);
-      if (state.phase === 'recording' && rec.state === 'recording') {
+      if (state.phase === 'recording' && rec.state === 'recording' && !state.processed) {
         console.log('[CS-031] 自动停止录制');
-        setPhase('finishing');
         rec.stop();
       }
     };
@@ -222,9 +222,8 @@
     const onPause = () => {
       console.log('[CS-032] audio paused');
       pauseTimer = setTimeout(() => {
-        if (state.phase === 'recording' && rec.state === 'recording') {
+        if (state.phase === 'recording' && rec.state === 'recording' && !state.processed) {
           console.log('[CS-033] pause 超 3s，自动停止');
-          setPhase('finishing');
           rec.stop();
         }
       }, 3000);
@@ -242,12 +241,12 @@
     };
     rec.onstop = async () => {
       console.log('[CS-020] onstop 触发，phase:', state.phase, 'chunks:', state.chunks.length);
-      // 防止重复处理
-      if (state.phase === 'idle' || state.phase === 'finishing') {
+      // 防止重复处理（用独立标记，不用 phase 判断）
+      if (state.processed) {
         console.log('[CS-021] 已处理过，跳过');
         return;
       }
-      setPhase('finishing');
+      state.processed = true;
       const blob = new Blob(state.chunks, { type: state.recMime });
       console.log('[CS-022] blob size:', blob.size);
       if (blob.size === 0) {
@@ -309,17 +308,15 @@
     const recState = state.recorder.state;
     console.log('[CS-013] recorder.state:', recState);
     if (recState === 'inactive') {
-      // recorder 已自动停止（stream 断开），onstop 已触发或即将触发
-      // 如果 chunks 有数据，onstop 回调会处理；如果没触发，手动触发
+      // recorder 已自动停止，onstop 可能已触发
+      // 如果没触发（没绑），手动调
       console.log('[CS-014] recorder 已 inactive，chunks:', state.chunks.length);
-      if (state.chunks.length > 0 && state.phase !== 'finishing') {
-        // onstop 可能已触发但 phase 还是 recording，手动调用
+      if (state.chunks.length > 0 && !state.processed) {
         state.recorder.onstop?.();
       }
       return;
     }
     if (recState === 'recording') {
-      setPhase('finishing');
       state.recorder.stop(); // 触发 onstop
       if (state.audio && !state.audio.paused) state.audio.pause();
       return;
